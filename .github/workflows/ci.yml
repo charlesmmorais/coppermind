@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  core:
+    # KiCAD-independent layers (domain, verification, transactions, tools)
+    # run anywhere — this is the whole point of the architecture.
+    name: Core (no KiCAD)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check src tests
+      - name: Type check
+        run: mypy src
+      - name: Tests
+        run: pytest --cov=coppermind --cov-report=term-missing
+
+  integration:
+    # IPC integration against a real KiCAD. Phase 1 fills in the marked tests;
+    # kept non-blocking until the IPC mapping lands.
+    name: Integration (headless KiCAD)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install KiCAD 10
+        run: |
+          sudo add-apt-repository --yes ppa:kicad/kicad-10.0-releases
+          sudo apt-get update
+          sudo apt-get install -y kicad
+      - name: Install Java (Freerouting)
+        run: sudo apt-get install -y openjdk-21-jre-headless || true
+      - name: Install project
+        run: pip install -e ".[dev,ipc]"
+      - name: Run integration tests
+        env:
+          COPPERMIND_BACKEND: ipc
+        run: pytest -m integration

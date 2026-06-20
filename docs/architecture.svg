@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 760" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0f1b2d"/><stop offset="1" stop-color="#0b1422"/>
+    </linearGradient>
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#7d8da5"/>
+    </marker>
+  </defs>
+  <rect width="940" height="760" rx="16" fill="url(#bg)"/>
+  <text x="34" y="46" fill="#e6edf3" font-size="26" font-weight="700">Coppermind — Arquitetura</text>
+  <text x="34" y="70" fill="#9fb0c8" font-size="14">Copiloto de IA para projeto de PCB no KiCAD · MCP · IPC-first · transacional · verificado</text>
+
+  <!-- L0 client -->
+  <rect x="300" y="92" width="340" height="46" rx="10" fill="#15263d" stroke="#2dd4bf" stroke-width="1.5"/>
+  <text x="470" y="120" fill="#e6edf3" font-size="15" font-weight="600" text-anchor="middle">Cliente MCP (Claude / Cursor / IDE)</text>
+  <line x1="470" y1="138" x2="470" y2="168" stroke="#7d8da5" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="486" y="158" fill="#7d8da5" font-size="11">MCP · JSON-RPC 2.0</text>
+
+  <!-- L1 server -->
+  <rect x="120" y="170" width="700" height="56" rx="10" fill="#13233a" stroke="#c87137" stroke-width="1.5"/>
+  <text x="470" y="194" fill="#f0c79a" font-size="15" font-weight="700" text-anchor="middle">server.py — FastMCP (camada fina)</text>
+  <text x="470" y="214" fill="#9fb0c8" font-size="12" text-anchor="middle">7 tools núcleo + 5 de descoberta sempre visíveis · cauda longa via execute_tool</text>
+  <line x1="470" y1="226" x2="470" y2="250" stroke="#7d8da5" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- L2 tools -->
+  <rect x="120" y="252" width="700" height="50" rx="10" fill="#15263d" stroke="#3b5273" stroke-width="1.2"/>
+  <text x="470" y="273" fill="#e6edf3" font-size="14" font-weight="600" text-anchor="middle">tools/  ·  core · discovery · registry · routed</text>
+  <text x="470" y="291" fill="#9fb0c8" font-size="11.5" text-anchor="middle">descoberta progressiva (orçamento de contexto testado em CI)</text>
+  <line x1="470" y1="302" x2="470" y2="326" stroke="#7d8da5" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- L3 transactions -->
+  <rect x="120" y="328" width="700" height="58" rx="10" fill="#13233a" stroke="#d4a017" stroke-width="1.5"/>
+  <text x="470" y="351" fill="#f2dca0" font-size="14" font-weight="700" text-anchor="middle">transactions/ — begin · preview · commit · rollback · undo/redo · timeline</text>
+  <text x="470" y="372" fill="#9fb0c8" font-size="12" text-anchor="middle">portão de commit = checagens estruturais  +  DRC/ERC nativo  (nada é escrito às cegas)</text>
+  <line x1="470" y1="386" x2="470" y2="410" stroke="#7d8da5" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- L4 domain core (KiCAD-independent) -->
+  <rect x="60" y="412" width="820" height="150" rx="12" fill="#0e1d31" stroke="#2dd4bf" stroke-width="1.8"/>
+  <text x="80" y="436" fill="#7bf0dd" font-size="14" font-weight="700">Núcleo independente de KiCAD  (testável sem o KiCAD)</text>
+  <!-- sub boxes -->
+  <rect x="80" y="448" width="180" height="46" rx="8" fill="#15263d" stroke="#3b5273"/>
+  <text x="170" y="468" fill="#e6edf3" font-size="12.5" font-weight="600" text-anchor="middle">domain</text>
+  <text x="170" y="485" fill="#9fb0c8" font-size="10.5" text-anchor="middle">model · diff · ops</text>
+  <rect x="270" y="448" width="180" height="46" rx="8" fill="#15263d" stroke="#3b5273"/>
+  <text x="360" y="468" fill="#e6edf3" font-size="12.5" font-weight="600" text-anchor="middle">verification</text>
+  <text x="360" y="485" fill="#9fb0c8" font-size="10.5" text-anchor="middle">checagens · severidade</text>
+  <rect x="460" y="448" width="180" height="46" rx="8" fill="#15263d" stroke="#3b5273"/>
+  <text x="550" y="468" fill="#e6edf3" font-size="12.5" font-weight="600" text-anchor="middle">intelligence</text>
+  <text x="550" y="485" fill="#9fb0c8" font-size="10.5" text-anchor="middle">KB · crítica · blocks · place</text>
+  <rect x="650" y="448" width="210" height="46" rx="8" fill="#15263d" stroke="#3b5273"/>
+  <text x="755" y="468" fill="#e6edf3" font-size="12.5" font-weight="600" text-anchor="middle">schematic · variants</text>
+  <text x="755" y="485" fill="#9fb0c8" font-size="10.5" text-anchor="middle">flatten netlist · DNP</text>
+  <text x="80" y="524" fill="#9fb0c8" font-size="12">Regra de ouro: domain e verification NUNCA importam KiCAD — os backends são a única costura.</text>
+  <text x="80" y="546" fill="#9fb0c8" font-size="12">Conhecimento de EE é dado versionado e citável (IPC-2221, boas práticas) — auditável.</text>
+  <line x1="470" y1="562" x2="470" y2="586" stroke="#7d8da5" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- L5 backends -->
+  <rect x="120" y="588" width="700" height="58" rx="10" fill="#13233a" stroke="#c87137" stroke-width="1.5"/>
+  <text x="470" y="611" fill="#f0c79a" font-size="14" font-weight="700" text-anchor="middle">backends/  (port / adapter — única costura com o KiCAD)</text>
+  <text x="470" y="632" fill="#9fb0c8" font-size="12" text-anchor="middle">IPCBackend (kipy, primário) · BatchBackend (kicad-cli headless) · MemoryBackend (dev/CI)</text>
+
+  <!-- integrations -->
+  <rect x="120" y="660" width="700" height="44" rx="10" fill="#15263d" stroke="#3b5273" stroke-width="1.2"/>
+  <text x="470" y="681" fill="#e6edf3" font-size="12.5" font-weight="600" text-anchor="middle">integrations/  ·  fornecedores (JLCPCB público + catálogo local)  ·  datasheets (LCSC)  ·  Freerouting (Java/Docker/Podman)</text>
+  <text x="470" y="697" fill="#9fb0c8" font-size="10.5" text-anchor="middle">atrás de interfaces · providers offline para testes sem rede</text>
+
+  <!-- KiCAD -->
+  <line x1="470" y1="646" x2="470" y2="660" stroke="#7d8da5" stroke-width="2"/>
+  <rect x="300" y="716" width="340" height="34" rx="9" fill="#1a2f1f" stroke="#3f9f6b" stroke-width="1.5"/>
+  <text x="470" y="738" fill="#9be7bd" font-size="13" font-weight="600" text-anchor="middle">KiCAD 10/11 — IPC API (Protobuf) · kicad-cli</text>
+</svg>

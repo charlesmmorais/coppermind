@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Coppermind runtime
+*.log
+snapshots/
+data/
+logs/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
