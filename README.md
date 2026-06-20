@@ -415,8 +415,3 @@ Licenciado sob **MIT** — veja [LICENSE](LICENSE).
 [jlcparts](https://github.com/yaqwsx/jlcparts) e
 [JLCSearch](https://jlcsearch.tscircuit.com/).
 
-> **⚠️ Sem garantia — use por sua conta e risco.** Sugestões geradas por IA **não
-> substituem revisão de engenharia qualificada**. Aplicações críticas (médicas,
-> aeroespaciais, automotivas) exigem verificação independente por especialistas.
-> A diferença do Coppermind é que a verificação é estrutural e as recomendações são
-> rastreáveis — o que **reduz**, mas não elimina, o risco.
