@@ -402,7 +402,7 @@ Non-negotiable principle: **the core stays KiCAD-independent and testable**.
 
 ---
 
-## 📜 License, credits & disclaimer
+## 📜 License & credits
 
 Licensed under **MIT** — see [LICENSE](LICENSE).
 
