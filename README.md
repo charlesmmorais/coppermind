@@ -405,7 +405,7 @@ Princípio inegociável: **o núcleo permanece independente de KiCAD e testável
 
 ---
 
-## 📜 Licença, créditos e aviso
+## 📜 Licença e créditos
 
 Licenciado sob **MIT** — veja [LICENSE](LICENSE).
 
