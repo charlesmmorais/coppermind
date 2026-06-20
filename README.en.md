@@ -411,9 +411,3 @@ Licensed under **MIT** — see [LICENSE](LICENSE).
 [Freerouting](https://github.com/freerouting/freerouting),
 [jlcparts](https://github.com/yaqwsx/jlcparts) and
 [JLCSearch](https://jlcsearch.tscircuit.com/).
-
-> **⚠️ No warranty — use at your own risk.** AI-generated suggestions **do not
-> replace qualified engineering review**. Safety-critical applications (medical,
-> aerospace, automotive) require independent expert verification. Coppermind's
-> difference is that verification is structural and recommendations are traceable —
-> which **reduces**, but does not eliminate, risk.
