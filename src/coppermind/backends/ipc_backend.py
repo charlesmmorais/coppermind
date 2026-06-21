@@ -61,12 +61,23 @@ class IPCBackend(KicadBackend):
         except Exception as exc:  # pragma: no cover - depends on env
             logger.debug("kipy not importable: %s", exc)
             return None
-        try:
-            self._kicad = KiCad(headless=self._headless, file_path=self._file_path)
-            return self._kicad
-        except Exception as exc:  # pragma: no cover - needs running KiCAD
-            logger.info("KiCAD IPC not reachable (is the IPC API enabled?): %s", exc)
-            return None
+        # kipy's KiCad() constructor signature varies across versions: older
+        # builds accept headless/file_path kwargs, newer ones take none. Try the
+        # richest call first and progressively fall back to a bare constructor.
+        for kwargs in (
+            {"headless": self._headless, "file_path": self._file_path},
+            {"file_path": self._file_path},
+            {},
+        ):
+            try:
+                self._kicad = KiCad(**{k: v for k, v in kwargs.items() if v is not None})
+                return self._kicad
+            except TypeError:
+                continue  # unsupported kwarg on this kipy version; try a simpler call
+            except Exception as exc:  # pragma: no cover - needs running KiCAD
+                logger.info("KiCAD IPC not reachable (is the IPC API enabled?): %s", exc)
+                return None
+        return None
 
     def is_available(self) -> bool:
         return self._connect() is not None

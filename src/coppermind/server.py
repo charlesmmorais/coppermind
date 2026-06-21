@@ -12,6 +12,7 @@ Run with:  coppermind         (after `pip install -e .`)
 from __future__ import annotations
 
 import functools
+import inspect
 import logging
 
 from coppermind.session import Session
@@ -20,12 +21,32 @@ from coppermind.tools import CORE_TOOLS, DISCOVERY_TOOLS
 logger = logging.getLogger("coppermind")
 
 
-def build_server():  # type: ignore[no-untyped-def]
-    """Create and configure the FastMCP server.
+def _bind_tool(fn, session):  # type: ignore[no-untyped-def]
+    """Bind ``session`` as the first argument and hide it from the public schema.
 
-    Imported lazily so the rest of the package (domain/verification/transactions)
-    works even when the MCP SDK isn't installed (e.g. in unit-test envs).
+    FastMCP/pydantic build each tool's JSON schema from the function signature.
+    A plain ``functools.partial`` still exposes the original ``session: Session``
+    parameter, and pydantic cannot emit a schema for that type. We therefore wrap
+    the call and publish a signature/annotations that omit ``session`` entirely.
     """
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return fn(session, *args, **kwargs)
+
+    sig = inspect.signature(fn)
+    params = [p for name, p in sig.parameters.items() if name != "session"]
+    wrapper.__signature__ = sig.replace(parameters=params)  # type: ignore[attr-defined]
+    wrapper.__annotations__ = {
+        k: v for k, v in getattr(fn, "__annotations__", {}).items() if k != "session"
+    }
+    if hasattr(wrapper, "__wrapped__"):
+        del wrapper.__wrapped__
+    return wrapper
+
+
+def build_server():  # type: ignore[no-untyped-def]
+    """Create and configure the FastMCP server."""
     from mcp.server.fastmcp import FastMCP
 
     mcp = FastMCP("coppermind")
@@ -33,7 +54,7 @@ def build_server():  # type: ignore[no-untyped-def]
     logger.info("Backend: %s", session.backend.name)
 
     for fn in CORE_TOOLS + DISCOVERY_TOOLS:
-        bound = functools.wraps(fn)(functools.partial(fn, session))
+        bound = _bind_tool(fn, session)
         mcp.add_tool(bound, name=fn.__name__, description=(fn.__doc__ or "").strip())
 
     @mcp.resource("kicad://project/current/preview.svg")
