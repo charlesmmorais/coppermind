@@ -90,7 +90,7 @@ class IPCBackend(KicadBackend):
 
     # -- read ---------------------------------------------------------------
 
-    def load(self, name: str) -> Board:  # pragma: no cover - needs running KiCAD
+    def load(self, name: str) -> Board:
         board = self._board()
         result = Board(name=name)
         for net in board.get_nets():
@@ -100,16 +100,19 @@ class IPCBackend(KicadBackend):
             ref = fp.reference_field.value if fp.reference_field else ""
             if not ref:
                 continue
+            cid = str(getattr(fp, "id", "") or "")
             result.components[ref] = Component(
                 reference=ref,
                 value=(fp.value_field.value if fp.value_field else ""),
                 footprint=self._footprint_id(fp),
                 position=Point(x=nm_to_mm(fp.position.x), y=nm_to_mm(fp.position.y)),
                 layer=_KICAD_TO_LAYER.get(fp.layer, Layer.F_CU),
+                **({"id": cid} if cid else {}),
             )
         for tr in board.get_tracks():
             if not hasattr(tr, "start"):
                 continue
+            tid = str(getattr(tr, "id", "") or "")
             result.tracks.append(
                 Track(
                     net=getattr(tr.net, "name", "") or "",
@@ -117,6 +120,7 @@ class IPCBackend(KicadBackend):
                     end=Point(x=nm_to_mm(tr.end.x), y=nm_to_mm(tr.end.y)),
                     width=nm_to_mm(tr.width),
                     layer=_KICAD_TO_LAYER.get(tr.layer, Layer.F_CU),
+                    **({"id": tid} if tid else {}),
                 )
             )
         return result
@@ -131,7 +135,7 @@ class IPCBackend(KicadBackend):
 
     # -- write --------------------------------------------------------------
 
-    def apply(self, board: Board) -> None:  # pragma: no cover - needs running KiCAD
+    def apply(self, board: Board) -> None:
         from kipy.board_types import Net as KiNet  # type: ignore import-not-found
         from kipy.board_types import Track as KiTrack  # type: ignore import-not-found
 
@@ -161,13 +165,9 @@ class IPCBackend(KicadBackend):
             self._modify_components(kboard, plan.components_to_modify)
             self._remove_components(kboard, plan.component_refs_to_remove)
 
-            if plan.tracks_to_modify or plan.track_indices_to_remove:
-                logger.warning(
-                    "Track modify/remove needs a stable item-id map (Phase 3); "
-                    "%d modify / %d remove deferred.",
-                    len(plan.tracks_to_modify),
-                    len(plan.track_indices_to_remove),
-                )
+            # Stable ids enable real in-place routing edits/removals (was deferred).
+            self._modify_routing(kboard, plan.tracks_to_modify, plan.vias_to_modify)
+            self._remove_by_id(kboard, [*plan.track_ids_to_remove, *plan.via_ids_to_remove])
 
             kboard.push_commit(commit, message="coppermind: apply")
         except Exception:
@@ -261,9 +261,43 @@ class IPCBackend(KicadBackend):
         if to_remove:
             kboard.remove_items(to_remove)
 
+    def _modify_routing(self, kboard, tracks, vias) -> None:  # type: ignore[no-untyped-def]
+        items = [*tracks, *vias]
+        if not items:
+            return
+        by_id = {it.id: it for it in items}
+        try:
+            live = kboard.get_items_by_id(list(by_id))
+        except Exception as exc:
+            logger.info("get_items_by_id failed: %s", exc)
+            return
+        updated = []
+        for obj in live:
+            target = by_id.get(str(getattr(obj, "id", "")))
+            if target is None:
+                continue
+            if hasattr(obj, "start") and hasattr(target, "start"):
+                obj.start = self._vec(target.start.x, target.start.y)
+                obj.end = self._vec(target.end.x, target.end.y)
+                obj.width = mm_to_nm(target.width)
+                obj.layer = _LAYER_TO_KICAD.get(target.layer, 0)
+            elif hasattr(obj, "position") and hasattr(target, "position"):
+                obj.position = self._vec(target.position.x, target.position.y)
+            updated.append(obj)
+        if updated:
+            kboard.update_items(updated)
+
+    def _remove_by_id(self, kboard, ids: list[str]) -> None:  # type: ignore[no-untyped-def]
+        if not ids:
+            return
+        try:
+            kboard.remove_items_by_id(ids)
+        except Exception as exc:
+            logger.info("remove_items_by_id failed: %s", exc)
+
     # -- render / DRC -------------------------------------------------------
 
-    def render(self, board: Board) -> bytes | None:  # pragma: no cover - needs KiCAD
+    def render(self, board: Board) -> bytes | None:
         try:
             kboard = self._board()
             with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as tmp:
@@ -290,7 +324,7 @@ class IPCBackend(KicadBackend):
                     fh.write(kboard.get_as_string())
                 report = os.path.join(d, "drc.json")
                 subprocess.run(build_drc_command(pcb, report, kicad_cli=cli),
-                               check=True, capture_output=True)
+                               check=True, capture_output=True, timeout=120)
                 with open(report, encoding="utf-8") as fh:
                     return parse_drc_report(json.load(fh))
         except Exception as exc:

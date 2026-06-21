@@ -10,9 +10,15 @@ All coordinates are in millimetres. Angles are in degrees, counter-clockwise.
 
 from __future__ import annotations
 
+import uuid
 from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator
+
+
+def _new_id() -> str:
+    """Generate a stable, opaque identifier for a board item."""
+    return uuid.uuid4().hex
 
 
 class Layer(str, Enum):
@@ -43,6 +49,7 @@ class Point(BaseModel):
 class Component(BaseModel):
     """A placed component (footprint instance)."""
 
+    id: str = Field(default_factory=_new_id, description="Stable item id (KiCAD KIID when loaded).")
     reference: str = Field(..., description="Designator, e.g. 'R1', 'U3'.")
     value: str = Field(default="", description="Value, e.g. '10k', 'STM32F103'.")
     footprint: str = Field(..., description="Library footprint id, e.g. 'R_0805_2012Metric'.")
@@ -76,6 +83,7 @@ class Net(BaseModel):
 class Track(BaseModel):
     """A copper trace segment on a single layer."""
 
+    id: str = Field(default_factory=_new_id, description="Stable item id (KiCAD KIID when loaded).")
     net: str
     start: Point
     end: Point
@@ -93,6 +101,7 @@ class Track(BaseModel):
 class Via(BaseModel):
     """A plated through/blind via connecting copper layers."""
 
+    id: str = Field(default_factory=_new_id, description="Stable item id (KiCAD KIID when loaded).")
     position: Point
     net: str = ""
     diameter: float = 0.8
@@ -132,3 +141,8 @@ class Board(BaseModel):
     def copy_deep(self) -> "Board":
         """Return an independent deep copy (used to snapshot transactions)."""
         return self.model_copy(deep=True)
+
+
+def content_without_id(item: BaseModel) -> dict:
+    """Serialize a board item excluding its id (for id-agnostic comparison)."""
+    return item.model_dump(exclude={"id"})

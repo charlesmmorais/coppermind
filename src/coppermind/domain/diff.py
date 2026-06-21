@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from coppermind.domain.models import Board
+from coppermind.domain.models import Board, content_without_id
 
 
 class BoardDiff(BaseModel):
@@ -70,8 +70,11 @@ def diff_boards(before: Board, after: Board) -> BoardDiff:
     modified = sorted(
         ref
         for ref in before_refs & after_refs
-        if before.components[ref] != after.components[ref]
+        if content_without_id(before.components[ref]) != content_without_id(after.components[ref])
     )
+
+    before_tids, after_tids = {t.id for t in before.tracks}, {t.id for t in after.tracks}
+    before_vids, after_vids = {v.id for v in before.vias}, {v.id for v in after.vias}
 
     return BoardDiff(
         components_added=sorted(after_refs - before_refs),
@@ -79,8 +82,8 @@ def diff_boards(before: Board, after: Board) -> BoardDiff:
         components_modified=modified,
         nets_added=sorted(set(after.nets) - set(before.nets)),
         nets_removed=sorted(set(before.nets) - set(after.nets)),
-        tracks_added=max(0, len(after.tracks) - len(before.tracks)),
-        tracks_removed=max(0, len(before.tracks) - len(after.tracks)),
-        vias_added=max(0, len(after.vias) - len(before.vias)),
-        vias_removed=max(0, len(before.vias) - len(after.vias)),
+        tracks_added=len(after_tids - before_tids),
+        tracks_removed=len(before_tids - after_tids),
+        vias_added=len(after_vids - before_vids),
+        vias_removed=len(before_vids - after_vids),
     )

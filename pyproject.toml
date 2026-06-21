@@ -33,6 +33,7 @@ packages = ["src/coppermind"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["integration: tests that need a live KiCAD (run in the integration CI job)"]
 pythonpath = ["src"]
 
 [tool.ruff]

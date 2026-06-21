@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776ab.svg)](https://www.python.org/)
 [![KiCAD 10/11](https://img.shields.io/badge/KiCAD-10%20%7C%2011-green.svg)](https://www.kicad.org/)
-[![Tests](https://img.shields.io/badge/tests-132%20passing-brightgreen.svg)](#-qualidade-testes-e-ci)
+[![Tests](https://img.shields.io/badge/tests-154%20passing-brightgreen.svg)](#-qualidade-testes-e-ci)
 [![MCP](https://img.shields.io/badge/protocol-MCP-orange.svg)](https://modelcontextprotocol.io/)
 
 **🇧🇷 Português (principal)** · [🇺🇸 English](README.en.md)
@@ -319,13 +319,19 @@ Rode o autorouter e me mostre o que mudou antes de gravar.
 
 ## 🔬 Qualidade: testes e CI
 
-- **132 testes** passando, **todos sem KiCAD nem rede**. As chamadas ao vivo
+- **154 testes** passando, **todos sem KiCAD nem rede**. As chamadas ao vivo
   (IPC/CLI/rede/motor externo) ficam isoladas e marcadas `# pragma: no cover`,
   cobertas pelo job de **integração** do CI (KiCAD 10 + Java headless).
 - **Invariantes verificadas por CI**, não prometidas:
   - 🧮 **orçamento de contexto**: falha se o conjunto visível de tools crescer demais;
   - 📚 **governança da KB**: toda regra precisa de id único, citação e racional;
   - 🚫 **SWIG-free** (prontidão KiCAD 11): falha se qualquer módulo importar `pcbnew`.
+
+O adaptador IPC é validado por um **harness com fake kipy** alimentado por
+**fixtures gravadas** (`tests/fixtures/`, `tests/conftest.py`): `load`/`apply`/`render`
+executam de ponta a ponta sem KiCAD. O job de integração roda os mesmos caminhos
+contra um KiCAD real (`tests/test_ipc_live.py`), e `scripts/record_kicad_fixture.py`
+grava novas fixtures de uma placa real.
 
 ```bash
 pytest                 # suíte completa (sem KiCAD)
@@ -384,8 +390,10 @@ coppermind/
   kipy para buscar a *definição* do footprint — inexistente no kipy 0.7 / KiCAD 10.
   O Coppermind já **modela** isso no plano puro e tenta a colocação, registrando o
   que não resolver.
-- **Modificar/remover trilhas ao vivo** precisa de um mapa estável de item-id;
-  hoje só **adições** de trilha são empurradas ao vivo (o plano puro já cobre o resto).
+- **Modificar/remover trilhas ao vivo**: agora há **ids estáveis** (UUID/KIID) em
+  tracks/vias, então o plano e o caminho IPC de modify/remove existem e são
+  testados na camada pura; a execução ao vivo ainda depende de validação contra o
+  KiCAD real.
 - A **API oficial `api.jlcpcb.com/Components`** exige credenciais enterprise — por
   isso o modo "sem credenciais" usa o JLCSearch, e o catálogo local cobre os 2,5M+
   offline.

@@ -22,4 +22,5 @@ def test_plan_includes_via_additions_and_removals():
 
     after2 = before.copy_deep()
     ops.add_via(before, 5, 5)  # before now has 1 via, after2 has 0
-    assert plan_apply(before, after2).via_indices_to_remove == [0]
+    removed_id = before.vias[0].id
+    assert plan_apply(before, after2).via_ids_to_remove == [removed_id]

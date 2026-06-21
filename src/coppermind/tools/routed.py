@@ -14,6 +14,7 @@ from coppermind.intelligence.explain import explain_board
 from coppermind.integrations.autorouter import FreeroutingRunner
 from coppermind.integrations.datasheets import enrich_bom
 from coppermind.integrations.freerouting import apply_route_to_board, autoroute_dsn, parse_ses
+from coppermind.safety import validate_input_file, validate_output_path
 from coppermind.integrations.suppliers.optimize import effective_total, pick_cheapest
 from coppermind.session import Session
 from coppermind.variants import ComponentOverride, Variant, resolve_variant
@@ -262,6 +263,7 @@ def route_import_ses(session: Session, ses_path: str, replace: bool = True) -> d
     """Import a Freerouting .ses session into the working board (uncommitted)."""
     doc = session.require_document()
     board = doc.working()
+    ses_path = validate_input_file(ses_path, {".ses"})
     with open(ses_path, encoding="utf-8") as fh:
         result = parse_ses(fh.read())
     applied = apply_route_to_board(board, result, replace_routing=replace)
@@ -289,7 +291,10 @@ def route_autoroute(
     import os
 
     doc = session.require_document()
-    result = autoroute_dsn(dsn_path, ses_path, os.path.expanduser(jar_path), max_passes)
+    dsn_path = validate_input_file(dsn_path, {".dsn"})
+    jar_path = validate_input_file(os.path.expanduser(jar_path), {".jar"})
+    ses_path = validate_output_path(ses_path, {".ses"})
+    result = autoroute_dsn(dsn_path, ses_path, jar_path, max_passes)
     board = doc.working()
     applied = apply_route_to_board(board, result)
     board.tracks = applied.tracks

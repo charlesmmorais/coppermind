@@ -37,21 +37,23 @@ def test_delete_is_removal():
     assert not plan.components_to_modify
 
 
-def test_track_modify_detected_positionally():
+def test_track_modify_detected_by_id():
     before = _base()
     after = before.copy_deep()
+    tid = after.tracks[0].id
     after.tracks[0] = after.tracks[0].model_copy(update={"width": 0.5})
     plan = plan_apply(before, after)
-    assert [i for i, _ in plan.tracks_to_modify] == [0]
-    assert plan.tracks_to_add == []
+    assert [t.id for t in plan.tracks_to_modify] == [tid]   # same id, modified
+    assert plan.tracks_to_add == [] and plan.track_ids_to_remove == []
 
 
-def test_track_add_and_remove_tail():
+def test_track_add_and_remove_by_id():
     before = _base()
     after = before.copy_deep()
     ops.route_track(after, "N", (3, 3), (4, 4))
     assert len(plan_apply(before, after).tracks_to_add) == 1
 
     after2 = before.copy_deep()
+    removed_id = after2.tracks[0].id
     after2.tracks.clear()
-    assert plan_apply(before, after2).track_indices_to_remove == [0]
+    assert plan_apply(before, after2).track_ids_to_remove == [removed_id]

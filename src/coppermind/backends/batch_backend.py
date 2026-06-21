@@ -48,7 +48,7 @@ class BatchBackend(KicadBackend):
                     self.kicad_cli, "pcb", "export", "svg",
                     "--output", out, "--fit-page-to-board", self.pcb_path,
                 ]
-                subprocess.run(cmd, check=True, capture_output=True)
+                subprocess.run(cmd, check=True, capture_output=True, timeout=300)
                 with open(out, "rb") as fh:
                     return fh.read()
         except Exception as exc:  # pragma: no cover - needs kicad-cli
@@ -60,7 +60,7 @@ class BatchBackend(KicadBackend):
             with tempfile.TemporaryDirectory() as d:
                 report = os.path.join(d, "drc.json")
                 cmd = build_drc_command(self.pcb_path, report, kicad_cli=self.kicad_cli)
-                subprocess.run(cmd, check=True, capture_output=True)
+                subprocess.run(cmd, check=True, capture_output=True, timeout=300)
                 with open(report, encoding="utf-8") as fh:
                     return parse_drc_report(json.load(fh))
         except Exception as exc:  # pragma: no cover - needs kicad-cli

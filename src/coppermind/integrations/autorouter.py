@@ -68,9 +68,10 @@ def build_freerouting_command(
 class FreeroutingRunner(AutoRouter):
     name = "freerouting"
 
-    def __init__(self, jar_path: str, max_passes: int = 10) -> None:
+    def __init__(self, jar_path: str, max_passes: int = 10, timeout_s: int = 600) -> None:
         self.jar_path = jar_path
         self.max_passes = max_passes
+        self.timeout_s = timeout_s
 
     def runtime(self) -> FreeroutingRuntime:
         return resolve_runtime()
@@ -97,5 +98,6 @@ class FreeroutingRunner(AutoRouter):
         cmd = build_freerouting_command(
             self.runtime(), self.jar_path, dsn_path, ses_path, max_passes or self.max_passes
         )
-        subprocess.run(cmd, check=True, capture_output=True)
+        # A bounded timeout prevents a stuck autorouter from hanging the session.
+        subprocess.run(cmd, check=True, capture_output=True, timeout=self.timeout_s)
         return ses_path

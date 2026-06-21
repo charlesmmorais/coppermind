@@ -34,9 +34,10 @@ def test_plan_removals():
     del after.components["R1"]
     after.tracks.clear()
 
+    removed_track_id = before.tracks[0].id
     plan = plan_apply(before, after)
     assert plan.component_refs_to_remove == ["R1"]
-    assert plan.track_indices_to_remove == [0]
+    assert plan.track_ids_to_remove == [removed_track_id]
 
 
 def test_empty_plan_for_identical():

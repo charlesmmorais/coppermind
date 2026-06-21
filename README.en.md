@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776ab.svg)](https://www.python.org/)
 [![KiCAD 10/11](https://img.shields.io/badge/KiCAD-10%20%7C%2011-green.svg)](https://www.kicad.org/)
-[![Tests](https://img.shields.io/badge/tests-132%20passing-brightgreen.svg)](#-quality-tests--ci)
+[![Tests](https://img.shields.io/badge/tests-154%20passing-brightgreen.svg)](#-quality-tests--ci)
 [![MCP](https://img.shields.io/badge/protocol-MCP-orange.svg)](https://modelcontextprotocol.io/)
 
 [🇧🇷 Português (main)](README.md) · **🇺🇸 English**
@@ -325,6 +325,12 @@ Run the autorouter and show me what changed before writing.
   - 📚 **KB governance**: every rule needs a unique id, a citation, and a rationale;
   - 🚫 **SWIG-free** (KiCAD 11 readiness): fails if any module imports `pcbnew`.
 
+The IPC adapter is validated by a **fake-kipy harness** driven by **recorded
+fixtures** (`tests/fixtures/`, `tests/conftest.py`): `load`/`apply`/`render` run
+end-to-end with no KiCAD. The integration job runs the same paths against real
+KiCAD (`tests/test_ipc_live.py`), and `scripts/record_kicad_fixture.py` captures
+new fixtures from a real board.
+
 ```bash
 pytest                 # full suite (no KiCAD)
 ruff check src tests   # lint
@@ -381,8 +387,9 @@ coppermind/
 - **Live library footprint placement** depends on a stable kipy API to fetch the
   footprint *definition* — absent in kipy 0.7 / KiCAD 10. Coppermind already
   **models** it in the pure plan and attempts placement, logging anything unresolved.
-- **Live track modify/remove** needs a stable item-id map; today only track
-  *additions* are pushed live (the pure plan already covers the rest).
+- **Live track modify/remove**: tracks/vias now carry **stable ids** (UUID/KIID),
+  so the plan and the IPC modify/remove path exist and are tested in the pure
+  layer; live execution still awaits validation against real KiCAD.
 - The official **`api.jlcpcb.com/Components`** API needs enterprise credentials —
   so the "no-credential" mode uses JLCSearch, and the local catalog covers the
   2.5M+ offline.

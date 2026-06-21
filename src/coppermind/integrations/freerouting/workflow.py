@@ -13,6 +13,7 @@ orchestrates routing + import from there.
 from __future__ import annotations
 
 import logging
+import subprocess
 
 from coppermind.domain.models import Board
 from coppermind.integrations.autorouter import AutoRouter, FreeroutingRunner
@@ -43,6 +44,7 @@ def autoroute_dsn(
     ses_path: str,
     jar_path: str,
     max_passes: int = 10,
+    timeout_s: int = 600,
     router: AutoRouter | None = None,
 ) -> RouteResult:
     """Route a .dsn into a .ses with Freerouting and parse the result.
@@ -50,12 +52,17 @@ def autoroute_dsn(
     The subprocess call is delegated to the AutoRouter (default: FreeroutingRunner,
     which auto-selects Java or Docker/Podman). Returns the parsed RouteResult.
     """
-    router = router or FreeroutingRunner(jar_path, max_passes=max_passes)
+    router = router or FreeroutingRunner(jar_path, max_passes=max_passes, timeout_s=timeout_s)
     if not router.is_available():
         raise RuntimeError(
             "Freerouting is not available: install Java 21+ or Docker/Podman and "
             "place the freerouting jar (see route_check)."
         )
-    produced = router.route(dsn_path, ses_path, max_passes)  # pragma: no cover - external
-    with open(produced, encoding="utf-8") as fh:  # pragma: no cover - external
+    try:
+        produced = router.route(dsn_path, ses_path, max_passes)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Freerouting timed out after {timeout_s}s — increase timeout_s or reduce max_passes."
+        ) from exc
+    with open(produced, encoding="utf-8") as fh:
         return parse_ses(fh.read())

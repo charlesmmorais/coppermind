@@ -1,0 +1,13 @@
+{
+  "nets": ["GND", "VCC", "LED1"],
+  "footprints": [
+    {"id": "kiid-R1", "reference": "R1", "value": "330",
+     "footprint": "Resistor_SMD:R_0603_1608Metric", "x": 10.0, "y": 10.0, "layer": "F.Cu"},
+    {"id": "kiid-D1", "reference": "D1", "value": "LED",
+     "footprint": "LED_SMD:LED_0603_1608Metric", "x": 20.0, "y": 10.0, "layer": "F.Cu"}
+  ],
+  "tracks": [
+    {"id": "kiid-T1", "net": "LED1", "start": [10.0, 10.0], "end": [20.0, 10.0],
+     "width": 0.3, "layer": "F.Cu"}
+  ]
+}
