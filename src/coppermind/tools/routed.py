@@ -10,6 +10,9 @@ from __future__ import annotations
 from coppermind.domain import operations as ops
 from coppermind.domain.netlist import component_netlist, pin_netlist
 from coppermind.intelligence.placement import hpwl, suggest_placement
+from coppermind.persistence import load_board, save_board
+from coppermind.serialize import board_to_kicad_pcb
+from coppermind.transactions.manager import Document
 from coppermind.intelligence import blocks, knowledge
 from coppermind.intelligence.critique import critique as run_critique
 from coppermind.intelligence.explain import explain_board
@@ -118,7 +121,7 @@ def design_list_rules(session: Session) -> dict:
     return {
         "kb_version": knowledge.KNOWLEDGE_BASE_VERSION,
         "rules": [
-            {"id": r.id, "title": r.title, "category": r.category.value, "citation": r.citation}
+            {"id": r.id, "title": r.title, "category": r.category, "citation": r.citation}
             for r in knowledge.all_rules()
         ],
     }
@@ -379,6 +382,35 @@ def design_suggest_placement(session: Session) -> dict:
     }
 
 
+# -- persistence & export (.kicad_pcb / JSON) ------------------------------
+
+def project_save(session: Session, path: str) -> dict:
+    """Save the current working board (including pending edits) to a .json file."""
+    doc = session.require_document()
+    saved = save_board(doc.working(), path)
+    return {"ok": True, "saved": saved}
+
+
+def project_open(session: Session, path: str) -> dict:
+    """Open a board previously saved with project_save (.json)."""
+    board = load_board(path)
+    session.backend.apply(board)
+    session.document = Document(board, session.backend)
+    return {"ok": True, "project": board.name,
+            "components": len(board.components), "tracks": len(board.tracks)}
+
+
+def design_export_pcb(session: Session, path: str) -> dict:
+    """Export the working board to a KiCAD .kicad_pcb file (for fab/DRC/render)."""
+    from coppermind.safety import validate_output_path
+
+    board = session.require_document().working()
+    out = validate_output_path(path, {".kicad_pcb"})
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write(board_to_kicad_pcb(board))
+    return {"ok": True, "exported": out}
+
+
 ROUTED_TOOLS = (
     component_move,
     component_edit,
@@ -413,4 +445,7 @@ ROUTED_TOOLS = (
     component_pads,
     design_netlist,
     design_suggest_placement,
+    project_save,
+    project_open,
+    design_export_pcb,
 )

@@ -9,6 +9,7 @@ authors = [{ name = "Coppermind contributors" }]
 dependencies = [
     "pydantic>=2.5.0",
     "mcp>=1.2.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +30,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/coppermind"]
+artifacts = ["src/coppermind/intelligence/ee_rules.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -42,5 +44,3 @@ target-version = "py311"
 
 [tool.mypy]
 python_version = "3.11"
-strict = true
-ignore_missing_imports = true

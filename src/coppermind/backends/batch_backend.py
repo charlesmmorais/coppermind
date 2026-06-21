@@ -3,8 +3,9 @@
 Complements IPC: where IPC needs a running KiCAD, the batch backend verifies and
 renders an existing ``.kicad_pcb`` file with no GUI — ideal for CI and for
 DRC-gating exported boards. ``run_drc`` and ``render`` are fully functional
-(subprocess + pure parsers from ``backends.drc``); ``load``/``apply`` require a
-.kicad_pcb (de)serializer, which is a later deliverable, so they raise clearly.
+(subprocess + pure parsers from ``backends.drc``). ``apply`` writes the board to
+the .kicad_pcb via the pure serializer, so a Coppermind board can be DRC'd and
+rendered headlessly; ``load`` (parsing .kicad_pcb back) remains a later deliverable.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import tempfile
 
 from coppermind.backends.base import KicadBackend
 from coppermind.backends.drc import build_drc_command, parse_drc_report
+from coppermind.serialize import board_to_kicad_pcb
 from coppermind.domain.models import Board
 from coppermind.verification.checks import Violation
 
@@ -38,7 +40,13 @@ class BatchBackend(KicadBackend):
         raise NotImplementedError("BatchBackend.load needs a .kicad_pcb parser (later phase)")
 
     def apply(self, board: Board) -> None:
-        raise NotImplementedError("BatchBackend.apply needs a .kicad_pcb writer (later phase)")
+        """Serialize the board to ``self.pcb_path`` so kicad-cli can act on it."""
+        from pathlib import Path
+
+        target = Path(self.pcb_path).expanduser()
+        if not target.parent.exists():
+            raise FileNotFoundError(f"output directory does not exist: {target.parent}")
+        target.write_text(board_to_kicad_pcb(board), encoding="utf-8")
 
     def render(self, board: Board) -> bytes | None:
         try:

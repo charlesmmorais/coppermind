@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776ab.svg)](https://www.python.org/)
 [![KiCAD 10/11](https://img.shields.io/badge/KiCAD-10%20%7C%2011-green.svg)](https://www.kicad.org/)
-[![Tests](https://img.shields.io/badge/tests-169%20passing-brightgreen.svg)](#-quality-tests--ci)
+[![Tests](https://img.shields.io/badge/tests-183%20passing-brightgreen.svg)](#-quality-tests--ci)
 [![MCP](https://img.shields.io/badge/protocol-MCP-orange.svg)](https://modelcontextprotocol.io/)
 
 [🇧🇷 Português (main)](README.md) · **🇺🇸 English**
@@ -86,6 +86,7 @@ verifies continuously, and keeps the human in control.
 | 🔎 **Real progressive discovery** | A lean always-visible set; the long tail is discovered on demand. A **context-budget CI test** enforces it — not a slogan. |
 | 🧠 **Design intelligence** | A **versioned, citable** EE knowledge base (IPC-2221 trace width, decoupling per IC…) powers proactive critique and design blocks — every suggestion points back to its rule. |
 | 🤝 **Collaboration & pluggable integrations** | Versioned timeline, explain mode, suppliers (JLCPCB/LCSC), and a Freerouting autorouter — behind interfaces, with offline providers tested without a network. |
+| 💾 **Persistent knowledge & state** | A **data-driven** EE rule base in YAML (`intelligence/ee_rules.yaml`); projects **saved/resumed** (JSON) and **exported to `.kicad_pcb`** for end-to-end headless DRC/render via the BatchBackend. |
 
 ---
 
@@ -193,7 +194,7 @@ headless DRC/render.
 
 ## 🛠️ Tool catalog
 
-**41 tools** total: **7 core** + **5 discovery** always visible, and **29 routed**
+**48 tools** total: **7 core** + **5 discovery** always visible, and **29 routed**
 discovered on demand (across 8 categories).
 
 ### Always visible — core

@@ -1,0 +1,67 @@
+# Coppermind EE knowledge base — data-driven, citable design rules.
+# Contributors can add rules here without touching Python. Each rule needs a
+# unique id, a title, a category, a one-line statement, a citation and a rationale.
+version: "2026.07"
+rules:
+  - id: EE.POWER.TRACE_WIDTH
+    title: Power trace width for current
+    category: power
+    statement: Size power/ground traces for their current using IPC-2221.
+    citation: IPC-2221
+    rationale: >-
+      Undersized copper overheats; width must match current, copper weight and
+      allowed temperature rise.
+
+  - id: EE.DECOUPLING.PER_IC
+    title: Decoupling capacitor per IC
+    category: decoupling
+    statement: Place a decoupling capacitor (~100 nF) close to each IC power pin.
+    citation: Common practice (e.g. Horowitz & Hill, IC datasheets)
+    rationale: >-
+      Local charge reservoir suppresses supply noise and keeps the
+      high-frequency return loop small.
+
+  - id: EE.GROUNDING.GND_PRESENT
+    title: Ground net present
+    category: grounding
+    statement: A design with power nets should define a ground (GND) net.
+    citation: Common practice
+    rationale: >-
+      Every supply needs a defined return path; a missing GND usually means an
+      incomplete power scheme.
+
+  - id: EE.SIGNAL.DIFF_PAIR_MATCH
+    title: Differential pair length/gap matching
+    category: signal
+    statement: Route differential pairs with matched length and a constant gap.
+    citation: IPC-2141 / high-speed design practice
+    rationale: >-
+      Length mismatch skews the signal and a varying gap changes the differential
+      impedance, degrading signal integrity.
+
+  - id: EE.MANUF.ANNULAR_RING
+    title: Minimum annular ring
+    category: manufacturability
+    statement: Keep the via/pad annular ring above the fab's minimum (e.g. 0.05 mm).
+    citation: IPC-6012 (fab class dependent)
+    rationale: >-
+      Too small a ring risks tangency/breakout when drilling is slightly off,
+      causing open connections.
+
+  - id: EE.MANUF.EDGE_CLEARANCE
+    title: Copper-to-edge clearance
+    category: manufacturability
+    statement: Keep copper a safe distance from the board edge (e.g. >= 0.3 mm).
+    citation: Common fab rule
+    rationale: >-
+      Copper too close to the routed edge can be exposed or peel during
+      depaneling.
+
+  - id: EE.THERMAL.RELIEF_ON_PLANE
+    title: Thermal relief for through-hole pads on planes
+    category: thermal
+    statement: Use thermal relief spokes for TH pads connected to copper pours.
+    citation: Common practice
+    rationale: >-
+      A solid plane connection sinks soldering heat, causing cold joints; thermal
+      relief balances connectivity and solderability.

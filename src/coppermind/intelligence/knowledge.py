@@ -1,79 +1,67 @@
-"""The EE knowledge base — explicit, versioned, and citable.
+"""The EE knowledge base — data-driven, versioned, and citable.
 
-The reference project hid any "best practice" knowledge inside opaque prompts.
-Coppermind makes it data: every rule has a stable id, a one-line statement, a
-citation (standard or well-known practice), and a rationale. The critique engine
-references these rules so each finding can point back to *why* — auditable, and
-it teaches the user instead of just flagging.
+Rules live in ``ee_rules.yaml`` (next to this module), so contributors can add or
+edit design knowledge without touching Python. Each rule has a stable id, a
+title, a category, a one-line statement, a citation (standard or well-known
+practice), and a rationale. The critique engine references rule ids so each
+finding points back to *why* — auditable, and it teaches the user.
 
-Bump KNOWLEDGE_BASE_VERSION when rules change; a governance test enforces that
-every rule is complete and ids are unique.
+Override the rules file with the ``COPPERMIND_RULES`` environment variable.
+A governance test enforces that every rule is complete and ids are unique.
 """
 
 from __future__ import annotations
 
-from enum import Enum
+import os
+from functools import lru_cache
+from pathlib import Path
 
+import yaml
 from pydantic import BaseModel
 
-KNOWLEDGE_BASE_VERSION = "2026.06"
-
-
-class RuleCategory(str, Enum):
-    POWER = "power"
-    DECOUPLING = "decoupling"
-    GROUNDING = "grounding"
-    MANUFACTURABILITY = "manufacturability"
+_DEFAULT_RULES_PATH = Path(__file__).with_name("ee_rules.yaml")
 
 
 class Rule(BaseModel):
     id: str
     title: str
-    category: RuleCategory
+    category: str
     statement: str
     citation: str
     rationale: str
 
 
-_RULES: dict[str, Rule] = {
-    r.id: r
-    for r in [
-        Rule(
-            id="EE.POWER.TRACE_WIDTH",
-            title="Power trace width for current",
-            category=RuleCategory.POWER,
-            statement="Size power/ground traces for their current using IPC-2221.",
-            citation="IPC-2221",
-            rationale="Undersized copper overheats; width must match current, "
-            "copper weight and allowed temperature rise.",
-        ),
-        Rule(
-            id="EE.DECOUPLING.PER_IC",
-            title="Decoupling capacitor per IC",
-            category=RuleCategory.DECOUPLING,
-            statement="Place a decoupling capacitor (~100 nF) close to each IC power pin.",
-            citation="Common practice (e.g. Horowitz & Hill, IC datasheets)",
-            rationale="Local charge reservoir suppresses supply noise and keeps "
-            "the high-frequency return loop small.",
-        ),
-        Rule(
-            id="EE.GROUNDING.GND_PRESENT",
-            title="Ground net present",
-            category=RuleCategory.GROUNDING,
-            statement="A design with power nets should define a ground (GND) net.",
-            citation="Common practice",
-            rationale="Every supply needs a defined return path; a missing GND "
-            "usually means an incomplete power scheme.",
-        ),
-    ]
-}
+def _rules_path() -> Path:
+    return Path(os.environ["COPPERMIND_RULES"]) if "COPPERMIND_RULES" in os.environ else _DEFAULT_RULES_PATH
+
+
+@lru_cache(maxsize=None)
+def _load() -> tuple[str, dict[str, Rule]]:
+    data = yaml.safe_load(_rules_path().read_text(encoding="utf-8")) or {}
+    version = str(data.get("version", "0"))
+    rules = {r["id"]: Rule(**r) for r in data.get("rules", [])}
+    return version, rules
+
+
+def reload_rules() -> None:
+    """Drop the cached rules (call after editing the YAML at runtime)."""
+    _load.cache_clear()
+
+
+def _version() -> str:
+    return _load()[0]
+
+
+# Module-level constant kept for back-compat; reflects the loaded KB version.
+KNOWLEDGE_BASE_VERSION: str = _version()
 
 
 def all_rules() -> list[Rule]:
-    return list(_RULES.values())
+    return list(_load()[1].values())
 
 
 def get_rule(rule_id: str) -> Rule:
-    if rule_id not in _RULES:
+    rules = _load()[1]
+    if rule_id not in rules:
         raise KeyError(f"unknown rule '{rule_id}'")
-    return _RULES[rule_id]
+    return rules[rule_id]

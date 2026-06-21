@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776ab.svg)](https://www.python.org/)
 [![KiCAD 10/11](https://img.shields.io/badge/KiCAD-10%20%7C%2011-green.svg)](https://www.kicad.org/)
-[![Tests](https://img.shields.io/badge/tests-169%20passing-brightgreen.svg)](#-qualidade-testes-e-ci)
+[![Tests](https://img.shields.io/badge/tests-183%20passing-brightgreen.svg)](#-qualidade-testes-e-ci)
 [![MCP](https://img.shields.io/badge/protocol-MCP-orange.svg)](https://modelcontextprotocol.io/)
 
 **🇧🇷 Português (principal)** · [🇺🇸 English](README.en.md)
@@ -87,6 +87,7 @@ projeto, valida continuamente e mantém o humano no controle.
 | 🔎 **Descoberta progressiva real** | Conjunto enxuto sempre visível; a cauda longa é descoberta sob demanda. Um **teste de orçamento de contexto** no CI garante isso — não é slogan. |
 | 🧠 **Inteligência de design** | Base de conhecimento de EE **versionada e citável** (largura por IPC-2221, desacoplamento por CI…) move crítica proativa e *design blocks* — cada sugestão aponta para sua regra. |
 | 🤝 **Colaboração & integrações plugáveis** | Linha do tempo versionada, modo "explique", fornecedores (JLCPCB/LCSC) e autorouter Freerouting — atrás de interfaces, com providers offline testáveis. |
+| 💾 **Conhecimento e estado persistentes** | KB de EE **em YAML** (data-driven, `intelligence/ee_rules.yaml`); projeto **salvo/retomado** (JSON) e **exportado para `.kicad_pcb`**, com DRC/render headless de ponta a ponta no BatchBackend. |
 
 ---
 
@@ -194,7 +195,7 @@ arquivos e usado para DRC/render headless.
 
 ## 🛠️ Catálogo de ferramentas (tools)
 
-**41 tools** no total: **7 núcleo** + **5 de descoberta** sempre visíveis, e
+**48 tools** no total: **7 núcleo** + **5 de descoberta** sempre visíveis, e
 **29 roteadas** descobertas sob demanda (organizadas em 8 categorias).
 
 ### Sempre visíveis — núcleo
@@ -319,7 +320,7 @@ Rode o autorouter e me mostre o que mudou antes de gravar.
 
 ## 🔬 Qualidade: testes e CI
 
-- **169 testes** passando, **todos sem KiCAD nem rede**. As chamadas ao vivo
+- **183 testes** passando, **todos sem KiCAD nem rede**. As chamadas ao vivo
   (IPC/CLI/rede/motor externo) ficam isoladas e marcadas `# pragma: no cover`,
   cobertas pelo job de **integração** do CI (KiCAD 10 + Java headless).
 - **Invariantes verificadas por CI**, não prometidas:
@@ -359,13 +360,14 @@ coppermind/
 │   ├── domain/                # modelo, diff, operações (sem KiCAD)
 │   ├── verification/          # checagens estruturais
 │   ├── transactions/          # transações + timeline
-│   ├── intelligence/          # KB, crítica, blocks, placement, explain
+│   ├── intelligence/          # KB (ee_rules.yaml), crítica, blocks, placement, explain
 │   ├── schematic/             # hierarquia + flatten de netlist
-│   ├── variants.py
+│   ├── variants.py · persistence.py   # variantes + salvar/retomar (JSON)
+│   ├── serialize/             # board_to_kicad_pcb (.kicad_pcb)
 │   ├── backends/              # IPC · Batch · Memory · DRC · units · mapping
 │   ├── integrations/          # suppliers · datasheets · freerouting
 │   └── tools/                 # core · discovery · registry · routed
-├── tests/                     # 132 testes (sem KiCAD)
+├── tests/                     # 183 testes (sem KiCAD)
 └── .github/workflows/ci.yml   # core (sem KiCAD) + integração (KiCAD+Java)
 ```
 
