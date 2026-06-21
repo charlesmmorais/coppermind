@@ -325,6 +325,29 @@ Rode o autorouter e me mostre o que mudou antes de gravar.
 
 ---
 
+## 📤 Levando o design para o KiCAD (forma recomendada)
+
+A API IPC do KiCAD 10 (kipy) **não expõe** uma chamada estável para resolver a
+*geometria* de um footprint de biblioteca, então a colocação de footprints **ao
+vivo** é parcial (a trilha entra, o corpo do footprint pode ser pulado e isso vai
+para o log). O caminho **confiável e recomendado** é **exportar** o design para um
+`.kicad_pcb` completo — com footprints, pads, trilhas e contorno — e abri-lo no
+KiCAD. O serializador do Coppermind escreve o arquivo fielmente, sem depender da
+limitação do IPC.
+
+No chat com o assistente, basta pedir:
+
+```text
+Exporte o design atual para C:\Users\voce\projetos\meu_projeto.kicad_pcb
+```
+
+Isso aciona a tool `design_export_pcb`. O resultado abre direto no KiCAD
+(**File → Open**) com tudo no lugar. O mesmo serializador alimenta o
+`BatchBackend`, que roda **DRC e render headless** (`kicad-cli`) sobre o arquivo
+exportado.
+
+---
+
 ## 🔬 Qualidade: testes e CI
 
 - **183 testes** passando, **todos sem KiCAD nem rede**. As chamadas ao vivo

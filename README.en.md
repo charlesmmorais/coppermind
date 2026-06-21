@@ -323,6 +323,29 @@ Run the autorouter and show me what changed before writing.
 
 ---
 
+## 📤 Getting the design into KiCAD (recommended path)
+
+KiCAD 10's IPC API (kipy) **does not expose** a stable call to resolve the
+*geometry* of a library footprint, so **live** footprint placement is partial
+(the track is created, the footprint body may be skipped and logged). The
+**reliable, recommended** path is to **export** the design to a complete
+`.kicad_pcb` — footprints, pads, tracks and outline — and open it in KiCAD.
+Coppermind's serializer writes the file faithfully, independent of the IPC
+limitation.
+
+In the chat with the assistant, just ask:
+
+```text
+Export the current design to C:\Users\you\projects\my_project.kicad_pcb
+```
+
+This triggers the `design_export_pcb` tool. The result opens straight in KiCAD
+(**File → Open**) with everything in place. The same serializer feeds the
+`BatchBackend`, which runs **headless DRC and render** (`kicad-cli`) over the
+exported file.
+
+---
+
 ## 🔬 Quality: tests & CI
 
 - **132 tests** passing, **all without KiCAD or a network**. Live calls
