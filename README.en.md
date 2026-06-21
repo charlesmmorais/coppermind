@@ -314,6 +314,13 @@ Apply the low-cost variant: R1 = 22k, R2 = DNP.
 Run the autorouter and show me what changed before writing.
 ```
 
+> 🧪 **Runnable example:** the same LED flow, now via the Python API, lives in
+> [`examples/led_board.py`](examples/led_board.py). It runs without KiCAD (MemoryBackend):
+>
+> ```bash
+> python -m examples.led_board
+> ```
+
 ---
 
 ## 🔬 Quality: tests & CI

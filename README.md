@@ -316,6 +316,13 @@ Aplique a variante de baixo custo: R1 = 22k, R2 = DNP.
 Rode o autorouter e me mostre o que mudou antes de gravar.
 ```
 
+> 🧪 **Exemplo executável:** o mesmo fluxo do LED, agora via API Python, está em
+> [`examples/led_board.py`](examples/led_board.py). Roda sem KiCAD (MemoryBackend):
+>
+> ```bash
+> python -m examples.led_board
+> ```
+
 ---
 
 ## 🔬 Qualidade: testes e CI
