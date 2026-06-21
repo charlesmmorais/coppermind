@@ -30,3 +30,8 @@ logs/
 *.lck
 *~
 
+
+.history/
+*.lck
+*~
+
