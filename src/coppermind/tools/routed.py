@@ -12,7 +12,7 @@ from coppermind.domain.netlist import component_netlist, pin_netlist
 from coppermind.intelligence.placement import hpwl, suggest_placement
 from coppermind.persistence import load_board, save_board
 from coppermind.serialize import board_to_kicad_pcb, schematic_to_kicad_sch
-from coppermind.schematic.models import NetLabel, Schematic, SchSymbol, Wire
+from coppermind.schematic.models import Junction, NetLabel, Schematic, SchSymbol, Wire
 from coppermind.transactions.manager import Document
 from coppermind.intelligence import blocks, knowledge
 from coppermind.intelligence.critique import critique as run_critique
@@ -448,6 +448,13 @@ def label_add(session: Session, text: str, x_mm: float, y_mm: float,
     return {"ok": True, "labels": len(sch.labels)}
 
 
+def junction_add(session: Session, x_mm: float, y_mm: float) -> dict:
+    """Add a junction dot (connects 3+ wires meeting at a point, mm)."""
+    sch = session.require_schematic()
+    sch.junctions.append(Junction(x=x_mm, y=y_mm))
+    return {"ok": True, "junctions": len(sch.junctions)}
+
+
 def schematic_info(session: Session) -> dict:
     """Summarize the current schematic (counts of symbols, wires, labels)."""
     sch = session.require_schematic()
@@ -506,6 +513,7 @@ ROUTED_TOOLS = (
     symbol_add,
     wire_add,
     label_add,
+    junction_add,
     schematic_info,
     schematic_export_sch,
 )

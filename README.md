@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776ab.svg)](https://www.python.org/)
 [![KiCAD 10/11](https://img.shields.io/badge/KiCAD-10%20%7C%2011-green.svg)](https://www.kicad.org/)
-[![Tests](https://img.shields.io/badge/tests-189%20passing-brightgreen.svg)](#-qualidade-testes-e-ci)
+[![Tests](https://img.shields.io/badge/tests-190%20passing-brightgreen.svg)](#-qualidade-testes-e-ci)
 [![MCP](https://img.shields.io/badge/protocol-MCP-orange.svg)](https://modelcontextprotocol.io/)
 
 **🇧🇷 Português (principal)** · [🇺🇸 English](README.en.md)
@@ -382,7 +382,7 @@ O resultado abre no Eeschema (**File → Open**). Veja o exemplo gerado em
 
 ## 🔬 Qualidade: testes e CI
 
-- **189 testes** passando, **todos sem KiCAD nem rede**. As chamadas ao vivo
+- **190 testes** passando, **todos sem KiCAD nem rede**. As chamadas ao vivo
   (IPC/CLI/rede/motor externo) ficam isoladas e marcadas `# pragma: no cover`,
   cobertas pelo job de **integração** do CI (KiCAD 10 + Java headless).
 - **Invariantes verificadas por CI**, não prometidas:
@@ -429,7 +429,7 @@ coppermind/
 │   ├── backends/              # IPC · Batch · Memory · DRC · units · mapping
 │   ├── integrations/          # suppliers · datasheets · freerouting
 │   └── tools/                 # core · discovery · registry · routed
-├── tests/                     # 189 testes (sem KiCAD)
+├── tests/                     # 190 testes (sem KiCAD)
 └── .github/workflows/ci.yml   # core (sem KiCAD) + integração (KiCAD+Java)
 ```
 

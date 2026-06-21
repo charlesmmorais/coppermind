@@ -91,3 +91,20 @@ def test_export_rejects_wrong_extension():
         assert False, "expected rejection"
     except Exception:
         pass
+
+
+def test_junctions_serialized():
+    from coppermind.schematic.models import Junction
+    from coppermind.session import Session
+    from coppermind.tools.routed import junction_add, schematic_create
+
+    s = Schematic(name="J")
+    s.symbols.append(SchSymbol(lib_id="Device:R", reference="R1", x=0, y=0))
+    s.junctions.append(Junction(x=10, y=20))
+    t = schematic_to_kicad_sch(s)
+    assert _balanced(t)
+    assert "(junction (at 10 20)" in t
+
+    sess = Session(backend=MemoryBackend())
+    schematic_create(sess, "J2")
+    assert junction_add(sess, 5, 5)["junctions"] == 1

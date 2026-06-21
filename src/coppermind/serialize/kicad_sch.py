@@ -2,8 +2,8 @@
 
 Mirrors the ``.kicad_pcb`` serializer: no KiCAD import, deterministic output. It
 embeds every used symbol's definition in ``lib_symbols`` (see ``schematic.symbols``)
-so the file is self-contained and opens in Eeschema. MVP scope: flat sheet with
-symbols, wires and local net labels.
+so the file is self-contained and opens in Eeschema. MVP scope: a flat sheet with
+symbols, wires, net labels and junctions.
 """
 
 from __future__ import annotations
@@ -70,6 +70,14 @@ def _wire(w) -> str:
     )
 
 
+def _junction(j) -> str:
+    return (
+        f"(junction (at {_fmt(j.x)} {_fmt(j.y)}) (diameter 0) (color 0 0 0 0)\n"
+        f'  (uuid "{j.uuid}")\n'
+        ")"
+    )
+
+
 def _label(label) -> str:
     return (
         f'(label "{label.text}" (at {_fmt(label.x)} {_fmt(label.y)} {_fmt(label.rotation)})\n'
@@ -96,13 +104,15 @@ def schematic_to_kicad_sch(sch: Schematic) -> str:
 
     for w in sch.wires:
         out.append(_indent(_wire(w), 2))
+    for j in sch.junctions:
+        out.append(_indent(_junction(j), 2))
     for label in sch.labels:
         out.append(_indent(_label(label), 2))
     for sym in sch.symbols:
         out.append(_indent(_symbol_instance(sym, sch.name), 2))
 
-    out.append('  (sheet_instances')
+    out.append("  (sheet_instances")
     out.append('    (path "/" (page "1"))')
-    out.append('  )')
+    out.append("  )")
     out.append(")")
     return "\n".join(out) + "\n"
