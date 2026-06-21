@@ -6,9 +6,12 @@ from coppermind.domain.models import (
     Component,
     Layer,
     Net,
+    Pad,
     Point,
     Track,
     Via,
+    content_without_id,
+    pad_absolute_position,
 )
 
 __all__ = [
@@ -17,7 +20,10 @@ __all__ = [
     "Component",
     "Layer",
     "Net",
+    "Pad",
     "Point",
     "Track",
     "Via",
+    "content_without_id",
+    "pad_absolute_position",
 ]

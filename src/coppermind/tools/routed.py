@@ -8,6 +8,8 @@ discovery tools and runs them through ``execute_tool``.
 from __future__ import annotations
 
 from coppermind.domain import operations as ops
+from coppermind.domain.netlist import component_netlist, pin_netlist
+from coppermind.intelligence.placement import hpwl, suggest_placement
 from coppermind.intelligence import blocks, knowledge
 from coppermind.intelligence.critique import critique as run_critique
 from coppermind.intelligence.explain import explain_board
@@ -334,6 +336,49 @@ def datasheet_enrich(session: Session, bom: dict) -> dict:
     return {"datasheets": enrich_bom(bom, session.supplier)}
 
 
+def component_add_pad(
+    session: Session, reference: str, number: str, offset_x: float, offset_y: float,
+    net: str = "", drill: float = 0.0,
+) -> dict:
+    """Add a pad/pin to a component (offset relative to its origin; uncommitted)."""
+    doc = session.require_document()
+    ops.add_pad(doc.working(), reference, number, offset_x, offset_y, net=net, drill=drill)
+    return {"ok": True, "reference": reference, "pad": number, "pending_commit": True}
+
+
+def component_pads(session: Session, reference: str) -> dict:
+    """List a component's pads (number, offset, net)."""
+    board = session.require_document().working()
+    if reference not in board.components:
+        raise ValueError(f"component '{reference}' does not exist")
+    return {"reference": reference, "pads": [
+        {"number": p.number, "offset": [p.offset.x, p.offset.y], "net": p.net}
+        for p in board.components[reference].pads
+    ]}
+
+
+def design_netlist(session: Session) -> dict:
+    """Pin-level netlist of the working board: net -> ['REF.PAD', ...]."""
+    return {"netlist": pin_netlist(session.require_document().working())}
+
+
+def design_suggest_placement(session: Session) -> dict:
+    """Suggest component moves that reduce wirelength (HPWL), using the board netlist."""
+    board = session.require_document().working()
+    netlist = component_netlist(board)
+    positions = {ref: (c.position.x, c.position.y) for ref, c in board.components.items()}
+    moved = suggest_placement(positions, netlist)
+    suggestions = {
+        ref: {"x": round(pos[0], 3), "y": round(pos[1], 3)}
+        for ref, pos in moved.items() if pos != positions[ref]
+    }
+    return {
+        "hpwl_before": round(hpwl(positions, netlist), 3),
+        "hpwl_after": round(hpwl(moved, netlist), 3),
+        "suggested_moves": suggestions,
+    }
+
+
 ROUTED_TOOLS = (
     component_move,
     component_edit,
@@ -364,4 +409,8 @@ ROUTED_TOOLS = (
     route_export_dsn,
     datasheet_get,
     datasheet_enrich,
+    component_add_pad,
+    component_pads,
+    design_netlist,
+    design_suggest_placement,
 )

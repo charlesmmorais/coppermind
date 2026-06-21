@@ -10,7 +10,7 @@ from enum import IntEnum
 
 from pydantic import BaseModel
 
-from coppermind.domain.models import COPPER_LAYERS, Board
+from coppermind.domain.models import COPPER_LAYERS, Board, pad_absolute_position
 
 
 class Severity(IntEnum):
@@ -146,13 +146,55 @@ def _check_min_track_width(board: Board) -> list[Violation]:
     return out
 
 
+def _check_pad_shorts(board: Board) -> list[Violation]:
+    """Pads of different nets that physically overlap on the same layer = short."""
+    out: list[Violation] = []
+    placed = []
+    for comp in board.components.values():
+        for pad in comp.pads:
+            placed.append((comp.reference, pad, pad_absolute_position(comp, pad)))
+    for i in range(len(placed)):
+        for j in range(i + 1, len(placed)):
+            (ra, pa, posa), (rb, pb, posb) = placed[i], placed[j]
+            if pa.layer != pb.layer or not pa.net or not pb.net or pa.net == pb.net:
+                continue
+            if (abs(posa.x - posb.x) < (pa.size.x + pb.size.x) / 2
+                    and abs(posa.y - posb.y) < (pa.size.y + pb.size.y) / 2):
+                out.append(Violation(
+                    severity=Severity.ERROR, code="PAD_SHORT",
+                    message=f"{ra}.{pa.number} ({pa.net}) overlaps {rb}.{pb.number} ({pb.net})",
+                    rule="Coppermind/connectivity",
+                    suggestion="Separate the pads or put them on the same net.",
+                    where=f"{ra}.{pa.number},{rb}.{pb.number}",
+                ))
+    return out
+
+
+def _check_single_pad_nets(board: Board) -> list[Violation]:
+    """A net touching only one pad is almost certainly unconnected."""
+    from coppermind.domain.netlist import pin_netlist
+
+    out: list[Violation] = []
+    for net, pins in pin_netlist(board).items():
+        if len(pins) == 1:
+            out.append(Violation(
+                severity=Severity.WARNING, code="SINGLE_PAD_NET",
+                message=f"net '{net}' connects to only one pad ({pins[0]})",
+                rule="Coppermind/connectivity",
+                suggestion="Connect the net to at least one more pad, or remove it.",
+                where=net,
+            ))
+    return out
+
+
 _STRUCTURAL = (
     _check_duplicate_refs,
     _check_within_outline,
     _aabb_overlap,
     _check_track_nets_exist,
+    _check_pad_shorts,
 )
-_ADVISORY = (_check_min_track_width,)
+_ADVISORY = (_check_min_track_width, _check_single_pad_nets)
 
 
 def verify(board: Board, include_advisory: bool = True) -> list[Violation]:

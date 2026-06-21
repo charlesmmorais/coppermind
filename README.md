@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776ab.svg)](https://www.python.org/)
 [![KiCAD 10/11](https://img.shields.io/badge/KiCAD-10%20%7C%2011-green.svg)](https://www.kicad.org/)
-[![Tests](https://img.shields.io/badge/tests-154%20passing-brightgreen.svg)](#-qualidade-testes-e-ci)
+[![Tests](https://img.shields.io/badge/tests-169%20passing-brightgreen.svg)](#-qualidade-testes-e-ci)
 [![MCP](https://img.shields.io/badge/protocol-MCP-orange.svg)](https://modelcontextprotocol.io/)
 
 **🇧🇷 Português (principal)** · [🇺🇸 English](README.en.md)
@@ -319,7 +319,7 @@ Rode o autorouter e me mostre o que mudou antes de gravar.
 
 ## 🔬 Qualidade: testes e CI
 
-- **154 testes** passando, **todos sem KiCAD nem rede**. As chamadas ao vivo
+- **169 testes** passando, **todos sem KiCAD nem rede**. As chamadas ao vivo
   (IPC/CLI/rede/motor externo) ficam isoladas e marcadas `# pragma: no cover`,
   cobertas pelo job de **integração** do CI (KiCAD 10 + Java headless).
 - **Invariantes verificadas por CI**, não prometidas:
@@ -386,10 +386,11 @@ coppermind/
 
 ## ⚠️ Limitações honestas
 
-- **Colocação de footprint de biblioteca ao vivo** depende de uma API estável do
-  kipy para buscar a *definição* do footprint — inexistente no kipy 0.7 / KiCAD 10.
-  O Coppermind já **modela** isso no plano puro e tenta a colocação, registrando o
-  que não resolver.
+- **Colocação de footprint de biblioteca ao vivo**: o domínio agora tem **pads/pinos**
+  (conectividade por pino, netlist por pad, DRC de curto entre pads), então a
+  geometria do componente é modelada; a resolução da *definição* da biblioteca
+  ainda depende de uma API estável do kipy (inexistente no 0.7), e é tentada com
+  registro do que não resolver.
 - **Modificar/remover trilhas ao vivo**: agora há **ids estáveis** (UUID/KIID) em
   tracks/vias, então o plano e o caminho IPC de modify/remove existem e são
   testados na camada pura; a execução ao vivo ainda depende de validação contra o
@@ -421,5 +422,4 @@ Licenciado sob **MIT** — veja [LICENSE](LICENSE).
 [KiCAD](https://www.kicad.org/), [kicad-python](https://docs.kicad.org/kicad-python-main/),
 [Freerouting](https://github.com/freerouting/freerouting),
 [jlcparts](https://github.com/yaqwsx/jlcparts) e
-[JLCSearch](https://jlcsearch.tscircuit.com/).
-
+[JLCSearch](https://jlcsearch.tscircuit.com/)

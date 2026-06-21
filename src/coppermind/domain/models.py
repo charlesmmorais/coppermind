@@ -10,6 +10,7 @@ All coordinates are in millimetres. Angles are in degrees, counter-clockwise.
 
 from __future__ import annotations
 
+import math
 import uuid
 from enum import Enum
 
@@ -46,6 +47,18 @@ class Point(BaseModel):
         return ((self.x - other.x) ** 2 + (self.y - other.y) ** 2) ** 0.5
 
 
+class Pad(BaseModel):
+    """A component pad/pin. ``offset`` is relative to the component origin (mm),
+    before the component rotation is applied; ``net`` is the net it belongs to."""
+
+    number: str = Field(..., description="Pad/pin id, e.g. '1', 'A1', 'GND'.")
+    offset: Point = Point(x=0.0, y=0.0)
+    net: str = ""
+    size: Point = Point(x=0.6, y=0.6)
+    drill: float = 0.0
+    layer: Layer = Layer.F_CU
+
+
 class Component(BaseModel):
     """A placed component (footprint instance)."""
 
@@ -58,6 +71,7 @@ class Component(BaseModel):
     layer: Layer = Layer.F_CU
     # Simplified body extent (half-width, half-height in mm) used for collision checks.
     half_size: Point = Point(x=1.0, y=0.5)
+    pads: list["Pad"] = Field(default_factory=list)
 
     @field_validator("reference")
     @classmethod
@@ -146,3 +160,12 @@ class Board(BaseModel):
 def content_without_id(item: BaseModel) -> dict:
     """Serialize a board item excluding its id (for id-agnostic comparison)."""
     return item.model_dump(exclude={"id"})
+
+
+def pad_absolute_position(component: Component, pad: Pad) -> Point:
+    """Absolute board position of a pad, applying the component rotation (deg, CCW)."""
+    angle = math.radians(component.rotation)
+    cos_a, sin_a = math.cos(angle), math.sin(angle)
+    rx = pad.offset.x * cos_a - pad.offset.y * sin_a
+    ry = pad.offset.x * sin_a + pad.offset.y * cos_a
+    return Point(x=component.position.x + rx, y=component.position.y + ry)

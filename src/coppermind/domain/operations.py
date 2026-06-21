@@ -13,6 +13,7 @@ from coppermind.domain.models import (
     Component,
     Layer,
     Net,
+    Pad,
     Point,
     Track,
     Via,
@@ -117,3 +118,24 @@ def add_via(
     via = Via(position=Point(x=x, y=y), net=net, diameter=diameter, drill=drill)
     board.vias.append(via)
     return via
+
+
+def add_pad(
+    board: Board, reference: str, number: str, offset_x: float, offset_y: float,
+    net: str = "", drill: float = 0.0,
+) -> Pad:
+    if reference not in board.components:
+        raise ValueError(f"component '{reference}' does not exist")
+    pad = Pad(number=number, offset=Point(x=offset_x, y=offset_y), net=net, drill=drill)
+    board.components[reference].pads.append(pad)
+    return pad
+
+
+def set_pad_net(board: Board, reference: str, number: str, net: str) -> Pad:
+    if reference not in board.components:
+        raise ValueError(f"component '{reference}' does not exist")
+    for pad in board.components[reference].pads:
+        if pad.number == number:
+            pad.net = net
+            return pad
+    raise ValueError(f"pad '{number}' not found on '{reference}'")
