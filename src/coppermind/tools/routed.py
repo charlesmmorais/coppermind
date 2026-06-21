@@ -11,7 +11,8 @@ from coppermind.domain import operations as ops
 from coppermind.domain.netlist import component_netlist, pin_netlist
 from coppermind.intelligence.placement import hpwl, suggest_placement
 from coppermind.persistence import load_board, save_board
-from coppermind.serialize import board_to_kicad_pcb
+from coppermind.serialize import board_to_kicad_pcb, schematic_to_kicad_sch
+from coppermind.schematic.models import NetLabel, Schematic, SchSymbol, Wire
 from coppermind.transactions.manager import Document
 from coppermind.intelligence import blocks, knowledge
 from coppermind.intelligence.critique import critique as run_critique
@@ -411,6 +412,59 @@ def design_export_pcb(session: Session, path: str) -> dict:
     return {"ok": True, "exported": out}
 
 
+# -- schematic (MVP, file-based) -------------------------------------------
+
+def schematic_create(session: Session, name: str, paper: str = "A4") -> dict:
+    """Start a new flat schematic in the session (symbols/wires/labels)."""
+    session.schematic = Schematic(name=name, paper=paper)
+    return {"ok": True, "schematic": name}
+
+
+def symbol_add(session: Session, lib_id: str, reference: str, x_mm: float,
+               y_mm: float, value: str = "", rotation: float = 0.0) -> dict:
+    """Add a symbol (e.g. 'Device:R') to the schematic at a position (mm)."""
+    sch = session.require_schematic()
+    if any(s.reference == reference for s in sch.symbols):
+        raise ValueError(f"symbol '{reference}' already exists")
+    sym = SchSymbol(lib_id=lib_id, reference=reference, value=value,
+                    x=x_mm, y=y_mm, rotation=rotation)
+    sch.symbols.append(sym)
+    return {"ok": True, "added": reference, "lib_id": lib_id}
+
+
+def wire_add(session: Session, x1_mm: float, y1_mm: float,
+             x2_mm: float, y2_mm: float) -> dict:
+    """Add a wire segment between two points (mm) to the schematic."""
+    sch = session.require_schematic()
+    sch.wires.append(Wire(x1=x1_mm, y1=y1_mm, x2=x2_mm, y2=y2_mm))
+    return {"ok": True, "wires": len(sch.wires)}
+
+
+def label_add(session: Session, text: str, x_mm: float, y_mm: float,
+              rotation: float = 0.0) -> dict:
+    """Add a local net label at a point (mm) to the schematic."""
+    sch = session.require_schematic()
+    sch.labels.append(NetLabel(text=text, x=x_mm, y=y_mm, rotation=rotation))
+    return {"ok": True, "labels": len(sch.labels)}
+
+
+def schematic_info(session: Session) -> dict:
+    """Summarize the current schematic (counts of symbols, wires, labels)."""
+    sch = session.require_schematic()
+    return {"ok": True, "schematic": sch.name,
+            "symbols": [s.reference for s in sch.symbols],
+            "wires": len(sch.wires), "labels": [label.text for label in sch.labels]}
+
+
+def schematic_export_sch(session: Session, path: str) -> dict:
+    """Export the schematic to a KiCAD .kicad_sch file (opens in Eeschema)."""
+    sch = session.require_schematic()
+    out = validate_output_path(path, {".kicad_sch"})
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write(schematic_to_kicad_sch(sch))
+    return {"ok": True, "exported": out}
+
+
 ROUTED_TOOLS = (
     component_move,
     component_edit,
@@ -448,4 +502,10 @@ ROUTED_TOOLS = (
     project_save,
     project_open,
     design_export_pcb,
+    schematic_create,
+    symbol_add,
+    wire_add,
+    label_add,
+    schematic_info,
+    schematic_export_sch,
 )

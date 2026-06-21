@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776ab.svg)](https://www.python.org/)
 [![KiCAD 10/11](https://img.shields.io/badge/KiCAD-10%20%7C%2011-green.svg)](https://www.kicad.org/)
-[![Tests](https://img.shields.io/badge/tests-183%20passing-brightgreen.svg)](#-qualidade-testes-e-ci)
+[![Tests](https://img.shields.io/badge/tests-189%20passing-brightgreen.svg)](#-qualidade-testes-e-ci)
 [![MCP](https://img.shields.io/badge/protocol-MCP-orange.svg)](https://modelcontextprotocol.io/)
 
 **🇧🇷 Português (principal)** · [🇺🇸 English](README.en.md)
@@ -48,6 +48,8 @@ conhecimento de engenharia elétrica citável**.
 - [Autorroteamento (Freerouting)](#-autorroteamento-freerouting)
 - [Fornecedores (JLCPCB/LCSC) e datasheets](#-fornecedores-jlcpcblcsc-e-datasheets)
 - [Exemplos de uso](#-exemplos-de-uso)
+- [Levando o design para o KiCAD](#-levando-o-design-para-o-kicad-forma-recomendada)
+- [Esquemático (Eeschema)](#-esquemático-eeschema--mvp)
 - [Qualidade: testes e CI](#-qualidade-testes-e-ci)
 - [Estrutura do projeto](#-estrutura-do-projeto)
 - [Roadmap / status das fases](#-roadmap--status-das-fases)
@@ -348,9 +350,39 @@ exportado.
 
 ---
 
+## 🔣 Esquemático (Eeschema) — MVP
+
+A API IPC do KiCAD ainda é **só PCB** (suporte ao Eeschema está em
+desenvolvimento), então o esquemático segue o mesmo caminho confiável do PCB:
+**gerar um `.kicad_sch`** que abre no Eeschema. O Coppermind embute as definições
+de símbolos (`lib_symbols`) no próprio arquivo, então ele é autossuficiente.
+
+Escopo do MVP: esquemático **plano** com **símbolos**, **fios** e **labels de
+net**. Símbolos conhecidos (`Device:R`, `Device:C`, `Device:L`, `Device:LED`,
+`Device:D`) e um corpo genérico de 2 pinos para qualquer outro `lib_id` — todos
+renderizam e conectam. Folhas hierárquicas e ERC nativo ficam para uma próxima
+fase.
+
+Tools: `schematic_create`, `symbol_add`, `wire_add`, `label_add`,
+`schematic_info`, `schematic_export_sch`.
+
+No chat com o assistente:
+
+```text
+Crie um esquemático 'LEDSchematic'.
+Adicione um resistor Device:R R1 de 330Ω em 100,80 e um LED Device:LED D1 em 120,80.
+Ligue-os com um fio e ponha um label LED1.
+Exporte para C:\Users\voce\projetos\meu.kicad_sch
+```
+
+O resultado abre no Eeschema (**File → Open**). Veja o exemplo gerado em
+[`LEDSchematic.kicad_sch`](LEDSchematic.kicad_sch).
+
+---
+
 ## 🔬 Qualidade: testes e CI
 
-- **183 testes** passando, **todos sem KiCAD nem rede**. As chamadas ao vivo
+- **189 testes** passando, **todos sem KiCAD nem rede**. As chamadas ao vivo
   (IPC/CLI/rede/motor externo) ficam isoladas e marcadas `# pragma: no cover`,
   cobertas pelo job de **integração** do CI (KiCAD 10 + Java headless).
 - **Invariantes verificadas por CI**, não prometidas:
@@ -397,7 +429,7 @@ coppermind/
 │   ├── backends/              # IPC · Batch · Memory · DRC · units · mapping
 │   ├── integrations/          # suppliers · datasheets · freerouting
 │   └── tools/                 # core · discovery · registry · routed
-├── tests/                     # 183 testes (sem KiCAD)
+├── tests/                     # 189 testes (sem KiCAD)
 └── .github/workflows/ci.yml   # core (sem KiCAD) + integração (KiCAD+Java)
 ```
 
@@ -424,34 +456,4 @@ coppermind/
   ainda depende de uma API estável do kipy (inexistente no 0.7), e é tentada com
   registro do que não resolver.
 - **Modificar/remover trilhas ao vivo**: agora há **ids estáveis** (UUID/KIID) em
-  tracks/vias, então o plano e o caminho IPC de modify/remove existem e são
-  testados na camada pura; a execução ao vivo ainda depende de validação contra o
-  KiCAD real.
-- A **API oficial `api.jlcpcb.com/Components`** exige credenciais enterprise — por
-  isso o modo "sem credenciais" usa o JLCSearch, e o catálogo local cobre os 2,5M+
-  offline.
-
----
-
-## 🤝 Contribuindo
-
-Contribuições são bem-vindas! Sugestão de fluxo:
-
-1. Abra uma *issue* descrevendo bug/ideia (com passos de reprodução).
-2. *Fork* → branch de feature → mantenha o estilo (ruff/mypy) → **adicione testes**.
-3. Garanta `pytest`, `ruff check` e `mypy src` verdes.
-4. Abra o PR com descrição clara.
-
-Princípio inegociável: **o núcleo permanece independente de KiCAD e testável**.
-
----
-
-## 📜 Licença e créditos
-
-Licenciado sob **MIT** — veja [LICENSE](LICENSE).
-
-**Créditos:** [Model Context Protocol](https://modelcontextprotocol.io/) (Anthropic),
-[KiCAD](https://www.kicad.org/), [kicad-python](https://docs.kicad.org/kicad-python-main/),
-[Freerouting](https://github.com/freerouting/freerouting),
-[jlcparts](https://github.com/yaqwsx/jlcparts) e
-[JLCSearch](https://jlcsearch.tscircuit.com/)
+  tracks/vias,

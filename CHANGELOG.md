@@ -7,6 +7,17 @@ This project adheres to [Semantic Versioning](https://semver.org/) and
 ## [Unreleased]
 
 ### Added
+- **Schematic (Eeschema) MVP** — drawable schematic model
+  (`Schematic`/`SchSymbol`/`Wire`/`NetLabel`), an embedded symbol library
+  (`schematic/symbols.py`, with a generic 2-pin fallback) and a `.kicad_sch`
+  serializer (`serialize/kicad_sch.py`) that produces a self-contained file
+  Eeschema opens. Tools: `schematic_create`, `symbol_add`, `wire_add`,
+  `label_add`, `schematic_info`, `schematic_export_sch`. KiCAD's IPC API is
+  PCB-only, so the schematic uses the same file-based path as the PCB export.
+- **MCP server fix** — tool binding strips the injected `session` parameter from
+  the public JSON schema (FastMCP could not serialize `Session`), fixing the
+  "Server disconnected" startup crash; `IPCBackend` now tolerates kipy `KiCad()`
+  constructor signature variants (no `headless` kwarg on newer versions).
 - **Data-driven EE knowledge base** — rules live in `intelligence/ee_rules.yaml`
   (override via `COPPERMIND_RULES`); contributors extend design knowledge without
   touching code. Expanded to 7 cited rules (IPC-2221 trace width, decoupling per
