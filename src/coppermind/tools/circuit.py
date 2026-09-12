@@ -44,6 +44,18 @@ def _automatic_symbol_position(index: int) -> tuple[float, float]:
     return x, y
 
 
+def _pins_for_instance(resolved, unit: int) -> dict[str, Pin]:
+    """Select pins for one displayed unit, including KiCad common unit 0."""
+    selected: dict[str, Pin] = {}
+    for pin in resolved.pins:
+        if pin.unit not in (0, unit):
+            continue
+        current = selected.get(pin.number)
+        if current is None or (current.unit == 0 and pin.unit == unit):
+            selected[pin.number] = pin
+    return selected
+
+
 def component_add(
     session: Session,
     reference: str,
@@ -59,15 +71,17 @@ def component_add(
         raise ValueError(f"component '{reference}' already exists")
 
     resolved = session.symbol_resolver.resolve(symbol)
-    units = sorted({pin.unit for pin in resolved.pins}) or [1]
-    if unit not in units:
+    explicit_units = sorted({pin.unit for pin in resolved.pins if pin.unit > 0})
+    available_units = explicit_units or [1]
+    if unit not in available_units:
         raise ValueError(
-            f"symbol '{symbol}' has units {units}; requested unit {unit} is not available"
+            f"symbol '{symbol}' has units {available_units}; requested unit {unit} is not available"
         )
 
-    pins: dict[str, Pin] = {}
-    for pin in resolved.pins:
-        pins.setdefault(pin.number, pin)
+    pins = _pins_for_instance(resolved, unit)
+    if not pins:
+        raise ValueError(f"symbol '{symbol}' has no pins available for unit {unit}")
+
     component = Component(
         reference=reference,
         symbol_id=resolved.lib_id,
@@ -102,7 +116,7 @@ def component_add(
                 "electrical_type": pin.electrical_type.value,
                 "unit": pin.unit,
             }
-            for pin in resolved.pins
+            for pin in pins.values()
         ],
         "pending_commit": True,
     }

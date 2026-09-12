@@ -122,18 +122,31 @@ def _collect_pin_geometry(node: list[Any], unit: int = 1) -> list[PinGeometry]:
 
 
 def symbol_pin_geometry(library: SchLibrarySymbol, unit: int) -> dict[str, PinGeometry]:
-    """Return electrical connection anchors for one real KiCad symbol unit."""
+    """Return electrical connection anchors for one real KiCad symbol unit.
+
+    KiCad unit 0 contains geometry/pins shared by every displayed unit.  When a
+    unit-specific pin uses the same number it takes precedence over the common
+    definition.
+    """
     by_number: dict[str, PinGeometry] = {}
     for definition in library.definitions:
         root = _parse_sexpr(definition.raw_s_expression)
         for pin in _collect_pin_geometry(root):
-            if pin.unit == unit:
-                by_number.setdefault(pin.number, pin)
+            if pin.unit not in (0, unit):
+                continue
+            current = by_number.get(pin.number)
+            if current is None or (current.unit == 0 and pin.unit == unit):
+                by_number[pin.number] = pin
     return by_number
 
 
 def _snap(value: float) -> float:
     return round(value / _GRID) * _GRID
+
+
+def _coord(value: float) -> float:
+    """Normalize float noise without moving an electrical connection point."""
+    return round(value, 6)
 
 
 def _component_graph(circuit: Circuit) -> dict[str, set[str]]:
@@ -218,19 +231,23 @@ def _pin_anchor(schematic: Schematic, reference: str, pin_number: str) -> tuple[
     pin = symbol_pin_geometry(library, sym.unit).get(pin_number)
     if pin is None:
         return None
-    dx, dy = _rotate(pin.x, pin.y, sym.rotation)
-    return _snap(sym.x + dx), _snap(sym.y + dy)
+
+    # KiCad library symbol coordinates use Y-up while schematic sheet
+    # coordinates use Y-down.  Preserve the exact pin endpoint: many real
+    # symbols intentionally use half-grid offsets such as 1.27/3.81 mm.
+    dx, dy = _rotate(pin.x, -pin.y, sym.rotation)
+    return _coord(sym.x + dx), _coord(sym.y + dy)
 
 
 def _segment_key(wire: Wire) -> tuple[tuple[float, float], tuple[float, float]]:
-    a = (_snap(wire.x1), _snap(wire.y1))
-    b = (_snap(wire.x2), _snap(wire.y2))
+    a = (_coord(wire.x1), _coord(wire.y1))
+    b = (_coord(wire.x2), _coord(wire.y2))
     return tuple(sorted((a, b)))  # type: ignore[return-value]
 
 
 def _append_wire(target: list[Wire], seen: set, a: tuple[float, float], b: tuple[float, float]) -> None:
-    a = (_snap(a[0]), _snap(a[1]))
-    b = (_snap(b[0]), _snap(b[1]))
+    a = (_coord(a[0]), _coord(a[1]))
+    b = (_coord(b[0]), _coord(b[1]))
     if a == b:
         return
     wire = Wire(x1=a[0], y1=a[1], x2=b[0], y2=b[1])
@@ -241,7 +258,7 @@ def _append_wire(target: list[Wire], seen: set, a: tuple[float, float], b: tuple
 
 
 def _route_net(name: str, endpoints: list[tuple[float, float]]) -> tuple[list[Wire], NetLabel, list[Junction]]:
-    points = sorted(set((_snap(x), _snap(y)) for x, y in endpoints))
+    points = sorted(set((_coord(x), _coord(y)) for x, y in endpoints))
     if not points:
         raise ValueError(f"net '{name}' has no drawable endpoints")
     if len(points) == 1:
@@ -254,18 +271,29 @@ def _route_net(name: str, endpoints: list[tuple[float, float]]) -> tuple[list[Wi
     seen: set = set()
     for x, y in points:
         _append_wire(wires, seen, (x, y), (trunk_x, y))
-    min_y = min(y for _, y in points)
-    max_y = max(y for _, y in points)
-    _append_wire(wires, seen, (trunk_x, min_y), (trunk_x, max_y))
+
+    # A pin that lands on the middle of one long trunk segment is only a
+    # geometric crossing to KiCad; it is not necessarily an electrical node.
+    # Split the trunk at every endpoint Y so each collinear pin is a real wire
+    # endpoint, then add a junction whenever three or more electrical legs meet.
+    ys = sorted({y for _, y in points})
+    for y0, y1 in zip(ys, ys[1:]):
+        _append_wire(wires, seen, (trunk_x, y0), (trunk_x, y1))
 
     junctions: list[Junction] = []
     if len(points) > 2:
-        for y in sorted({y for _, y in points}):
-            branches = sum(1 for x, py in points if py == y and x != trunk_x)
-            vertical = min_y < y < max_y
-            if branches + int(vertical) >= 2:
+        min_y, max_y = ys[0], ys[-1]
+        for y in ys:
+            branches = sum(
+                1 for x, py in points if py == y and not math.isclose(x, trunk_x)
+            )
+            on_trunk = sum(
+                1 for x, py in points if py == y and math.isclose(x, trunk_x)
+            )
+            vertical_sides = int(y > min_y) + int(y < max_y)
+            if branches + on_trunk + vertical_sides >= 3:
                 junctions.append(Junction(x=trunk_x, y=y))
-    return wires, NetLabel(text=name, x=trunk_x, y=min_y), junctions
+    return wires, NetLabel(text=name, x=trunk_x, y=ys[0]), junctions
 
 
 def compose_schematic(circuit: Circuit, schematic: Schematic) -> ComposeReport:
@@ -299,7 +327,7 @@ def compose_schematic(circuit: Circuit, schematic: Schematic) -> ComposeReport:
 
     unique_junctions: dict[tuple[float, float], Junction] = {}
     for junction in schematic.junctions:
-        unique_junctions.setdefault((_snap(junction.x), _snap(junction.y)), junction)
+        unique_junctions.setdefault((_coord(junction.x), _coord(junction.y)), junction)
     schematic.junctions = list(unique_junctions.values())
 
     return ComposeReport(

@@ -17,9 +17,13 @@ from typing import Any, Protocol
 
 from coppermind.circuit import Circuit, ElectricalType
 from coppermind.libraries import SymbolResolver
-from coppermind.schematic.composer import symbol_pin_geometry
+from coppermind.schematic.composer import (
+    _pin_anchor as _semantic_pin_anchor,
+    _route_net as _semantic_route_net,
+    symbol_pin_geometry,
+)
 from coppermind.schematic.erc import evaluate_schematic, run_kicad_erc
-from coppermind.schematic.models import Junction, NetLabel, Schematic, SchSymbol, Wire
+from coppermind.schematic.models import Schematic, SchSymbol
 from coppermind.serialize.kicad_sch import schematic_to_kicad_sch
 
 _GRID = 2.54
@@ -55,6 +59,10 @@ def _snap(value: float) -> float:
     return round(value / _GRID) * _GRID
 
 
+def _coord(value: float) -> float:
+    return round(value, 6)
+
+
 def _rotate(x: float, y: float, degrees: float) -> tuple[float, float]:
     angle = math.radians(degrees)
     return x * math.cos(angle) - y * math.sin(angle), x * math.sin(angle) + y * math.cos(angle)
@@ -65,7 +73,7 @@ def _symbol_bounds(schematic: Schematic, symbol: SchSymbol) -> tuple[float, floa
     points: list[tuple[float, float]] = []
     if library is not None:
         for pin in symbol_pin_geometry(library, symbol.unit).values():
-            dx, dy = _rotate(pin.x, pin.y, symbol.rotation)
+            dx, dy = _rotate(pin.x, -pin.y, symbol.rotation)
             points.append((symbol.x + dx, symbol.y + dy))
     if not points:
         points = [(symbol.x - 5.08, symbol.y - 5.08), (symbol.x + 5.08, symbol.y + 5.08)]
@@ -87,7 +95,7 @@ def _box_gap(a: tuple[float, float, float, float], b: tuple[float, float, float,
 
 def _wire_crossings(schematic: Schematic) -> list[tuple[int, int]]:
     """Return interior orthogonal crossings that have no explicit junction."""
-    junctions = {(_snap(item.x), _snap(item.y)) for item in schematic.junctions}
+    junctions = {(_coord(item.x), _coord(item.y)) for item in schematic.junctions}
     result: list[tuple[int, int]] = []
     for i, left in enumerate(schematic.wires):
         left_h = math.isclose(left.y1, left.y2)
@@ -104,7 +112,7 @@ def _wire_crossings(schematic: Schematic) -> list[tuple[int, int]]:
             px, py = vertical.x1, horizontal.y1
             hx0, hx1 = sorted((horizontal.x1, horizontal.x2))
             vy0, vy1 = sorted((vertical.y1, vertical.y2))
-            if hx0 < px < hx1 and vy0 < py < vy1 and (_snap(px), _snap(py)) not in junctions:
+            if hx0 < px < hx1 and vy0 < py < vy1 and (_coord(px), _coord(py)) not in junctions:
                 result.append((i, j))
     return result
 
@@ -288,13 +296,16 @@ def review_schematic_visual(
     else:
         width = height = 0.0
     aspect = width / height if height > 0 else 0.0
-    if aspect > 6.0:
+    if aspect > 6.0 or (aspect > 0.0 and aspect < 1.0 / 6.0):
+        orientation = "wide" if aspect > 1.0 else "tall"
+        ratio = aspect if aspect >= 1.0 else 1.0 / aspect
         findings.append(
             VisualFinding(
                 "EXTREME_ASPECT_RATIO",
                 "info",
-                f"schematic layout is very wide ({aspect:.1f}:1)",
+                f"schematic layout is very {orientation} ({ratio:.1f}:1)",
                 4.0,
+                tuple(refs),
             )
         )
 
@@ -364,63 +375,13 @@ def review_schematic_visual(
 
 
 def _pin_anchor(schematic: Schematic, reference: str, pin_number: str) -> tuple[float, float] | None:
-    symbol = next((item for item in schematic.symbols if item.reference == reference), None)
-    if symbol is None:
-        return None
-    library = schematic.library_symbols.get(symbol.lib_id)
-    if library is None:
-        return None
-    pin = symbol_pin_geometry(library, symbol.unit).get(pin_number)
-    if pin is None:
-        return None
-    dx, dy = _rotate(pin.x, pin.y, symbol.rotation)
-    return _snap(symbol.x + dx), _snap(symbol.y + dy)
+    """Use the same exact electrical anchor as the semantic composer."""
+    return _semantic_pin_anchor(schematic, reference, pin_number)
 
 
-def _append_wire(
-    target: list[Wire],
-    seen: set[tuple[tuple[float, float], tuple[float, float]]],
-    a: tuple[float, float],
-    b: tuple[float, float],
-) -> None:
-    a, b = (_snap(a[0]), _snap(a[1])), (_snap(b[0]), _snap(b[1]))
-    if a == b:
-        return
-    ordered = sorted((a, b))
-    key = (ordered[0], ordered[1])
-    if key in seen:
-        return
-    seen.add(key)
-    target.append(Wire(x1=a[0], y1=a[1], x2=b[0], y2=b[1]))
-
-
-def _route_net(
-    name: str, endpoints: list[tuple[float, float]]
-) -> tuple[list[Wire], NetLabel, list[Junction]]:
-    points = sorted(set((_snap(x), _snap(y)) for x, y in endpoints))
-    if not points:
-        raise ValueError(f"net '{name}' has no drawable endpoints")
-    if len(points) == 1:
-        x, y = points[0]
-        return [], NetLabel(text=name, x=x, y=y), []
-
-    xs = sorted(x for x, _ in points)
-    trunk_x = _snap(xs[len(xs) // 2])
-    wires: list[Wire] = []
-    seen: set[tuple[tuple[float, float], tuple[float, float]]] = set()
-    for x, y in points:
-        _append_wire(wires, seen, (x, y), (trunk_x, y))
-    min_y = min(y for _, y in points)
-    max_y = max(y for _, y in points)
-    _append_wire(wires, seen, (trunk_x, min_y), (trunk_x, max_y))
-
-    junctions: list[Junction] = []
-    if len(points) > 2:
-        for y in sorted({y for _, y in points}):
-            branches = sum(1 for x, py in points if py == y and x != trunk_x)
-            if branches + int(min_y < y < max_y) >= 2:
-                junctions.append(Junction(x=trunk_x, y=y))
-    return wires, NetLabel(text=name, x=trunk_x, y=min_y), junctions
+def _route_net(name: str, endpoints: list[tuple[float, float]]):
+    """Use the semantic composer's exact endpoint-preserving router."""
+    return _semantic_route_net(name, endpoints)
 
 
 def _reroute(circuit: Circuit, schematic: Schematic) -> list[str]:
@@ -441,7 +402,7 @@ def _reroute(circuit: Circuit, schematic: Schematic) -> list[str]:
             schematic.wires.extend(wires)
             schematic.labels.append(label)
             schematic.junctions.extend(junctions)
-    unique = {(_snap(item.x), _snap(item.y)): item for item in schematic.junctions}
+    unique = {(_coord(item.x), _coord(item.y)): item for item in schematic.junctions}
     schematic.junctions = list(unique.values())
     return unresolved
 
