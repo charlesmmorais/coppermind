@@ -3,6 +3,7 @@ import shutil
 import pytest
 
 from coppermind.backends.memory_backend import MemoryBackend
+from coppermind.schematic.visual_ai import render_schematic_pdf
 from coppermind.schematic.visual_review import evaluate_visual_schematic
 from coppermind.session import Session
 from coppermind.tools.circuit import component_add, connect_pins, create_net
@@ -35,3 +36,32 @@ def test_visual_pipeline_renders_real_kicad_svg_and_reruns_erc():
     assert result["kicad"]["available"] is True
     assert result["kicad"].get("returncode") in (0, 5), result
     assert "error" not in result["kicad"], result
+
+
+@pytest.mark.integration
+def test_multimodal_reviewer_input_is_real_kicad_pdf():
+    if shutil.which("kicad-cli") is None:
+        pytest.skip("kicad-cli is not installed")
+
+    session = Session(backend=MemoryBackend())
+    project_create(session, "visual_pdf", 100, 80)
+    component_add(session, "R1", "Device:R", value="10k")
+    component_add(session, "C1", "Device:C", value="100n")
+    create_net(session, "SENSE")
+    connect_pins(session, "SENSE", ["R1.2", "C1.1"])
+
+    evaluate_visual_schematic(
+        session.require_circuit(),
+        session.require_schematic(),
+        resolver=session.symbol_resolver,
+        run_external=False,
+    )
+    rendered = render_schematic_pdf(
+        session.require_schematic(),
+        resolver=session.symbol_resolver,
+    )
+
+    assert rendered["available"] is True, rendered
+    assert rendered["error"] is None, rendered
+    assert rendered["bytes"] > 100
+    assert rendered["_pdf_bytes"].startswith(b"%PDF")
