@@ -4,6 +4,7 @@ from pathlib import Path
 
 from coppermind.backends.memory_backend import MemoryBackend
 from coppermind.libraries import SymbolResolver
+from coppermind.schematic import incremental
 from coppermind.session import Session
 from coppermind.tools.circuit import (
     component_add,
@@ -125,6 +126,60 @@ def test_checkpoint_blocks_semantic_net_that_was_not_incrementally_routed(tmp_pa
     assert result["committed"] is False
     assert result["validation"]["blocking"] is True
     assert result["validation"]["semantic_violations"][0]["type"] == "NET_NOT_INCREMENTALLY_ROUTED"
+
+
+def test_progressive_checkpoint_ignores_only_expected_unconnected_pin_erc(
+    tmp_path: Path,
+    monkeypatch,
+):
+    session = _session(tmp_path)
+    project_create(session, "incremental", 100, 80)
+    component_add(session, "R1", "Device:R")
+
+    def fake_erc(*_args, **_kwargs):
+        return {
+            "available": True,
+            "blocking": True,
+            "violations": [
+                {
+                    "severity": "error",
+                    "description": "Pin not connected",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(incremental, "run_kicad_erc", fake_erc)
+    result = schematic_checkpoint(session, allow_incomplete=True)
+
+    assert result["committed"] is True
+    assert result["validation"]["blocking"] is False
+    violation = result["validation"]["kicad"]["violations"][0]
+    assert violation["progressive_ignored"] is True
+
+
+def test_progressive_checkpoint_keeps_real_erc_error_blocking(tmp_path: Path, monkeypatch):
+    session = _session(tmp_path)
+    project_create(session, "incremental", 100, 80)
+    component_add(session, "R1", "Device:R")
+
+    def fake_erc(*_args, **_kwargs):
+        return {
+            "available": True,
+            "blocking": True,
+            "violations": [
+                {
+                    "severity": "error",
+                    "description": "Power output connected to another power output",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(incremental, "run_kicad_erc", fake_erc)
+    result = schematic_checkpoint(session, allow_incomplete=True)
+
+    assert result["committed"] is False
+    assert result["validation"]["blocking"] is True
+    assert "progressive_ignored" not in result["validation"]["kicad"]["violations"][0]
 
 
 def test_checkpoint_and_export_current_without_global_compose(tmp_path: Path):
