@@ -2,7 +2,7 @@
 
 Este guia mostra, passo a passo, como rotear automaticamente uma PCB no fluxo do
 Coppermind usando o [Freerouting](https://github.com/freerouting/freerouting) —
-do export do DSN no KiCAD até aplicar o resultado na placa.
+do export do DSN no KiCad até aplicar o resultado na placa.
 
 ![Fluxo Freerouting](freerouting-flow.svg)
 
@@ -10,28 +10,32 @@ O Coppermind usa o formato **Specctra**: exporta-se um `.dsn`, o Freerouting
 roteia e gera um `.ses`, e o Coppermind importa o `.ses` de volta como trilhas e
 vias — tudo dentro de uma transação reversível (preview/diff/commit).
 
+O fluxo é independente do transport MCP: funciona tanto via `stdio` quanto via
+Streamable HTTP. Para configuração de cliente/túnel, veja
+[TRANSPORTES.md](TRANSPORTES.md).
+
 ---
 
 ## Pré-requisitos
 
 | Requisito | Por quê |
 | --- | --- |
-| KiCAD 10+ | exportar o Specctra DSN da sua placa |
+| KiCad 10+ | exportar o Specctra DSN da sua placa |
 | `freerouting.jar` (v2) **ou** Docker/Podman | executar o autorouter |
 | Java 21+ (só se rodar o jar direto, sem container) | runtime do Freerouting |
-| Coppermind instalado (`pip install -e .`) | orquestrar o fluxo |
+| Coppermind com extras IPC (`pip install -e ".[ipc]"`) | orquestrar o fluxo e conversar com KiCad quando disponível |
 
 O Coppermind detecta o runtime automaticamente, **nesta ordem**: Java local →
 Docker → Podman. Confira a qualquer momento com a tool `route_check`.
 
 ---
 
-## Passo 1 — Exportar o DSN do KiCAD
+## Passo 1 — Exportar o DSN do KiCad
 
 O `kicad-cli` **não** exporta Specctra DSN, então o export é feito pela interface
-do KiCAD (PCB Editor):
+do KiCad (PCB Editor):
 
-1. Abra sua placa no **PCB Editor** do KiCAD.
+1. Abra sua placa no **PCB Editor** do KiCad.
 2. Menu **File → Export → Specctra DSN…**
 3. Salve como, por exemplo, `~/projetos/minha_placa/board.dsn`.
 
@@ -93,25 +97,24 @@ informado.
 
 ## Passo 4 — Rodar o autorroteamento
 
-Com a placa aberta no Coppermind (após `project_create`/`open` e o `.dsn` exportado):
+Com a placa aberta no Coppermind e o `.dsn` exportado:
 
 ```text
 route_autoroute
   dsn_path = ~/projetos/minha_placa/board.dsn
   ses_path = ~/projetos/minha_placa/board.ses
-  jar_path = ~/.kicad-mcp/freerouting.jar   # (padrão; pode omitir)
+  jar_path = ~/.kicad-mcp/freerouting.jar   # padrão; pode omitir
   max_passes = 10
 ```
 
 O Coppermind:
 
-1. resolve o runtime (Java/Docker/Podman) e monta o comando
-   `freerouting -de board.dsn -do board.ses -mp 10`;
-2. executa o Freerouting e aguarda o `.ses`;
-3. faz o **parse do SES** (respeitando resolução/unidades) → trilhas + vias;
-4. aplica ao *working board*, **substituindo** o roteamento obsoleto.
+1. resolve o runtime (Java/Docker/Podman) e monta o comando do Freerouting;
+2. executa o motor e aguarda o `.ses`;
+3. faz o **parse do SES** respeitando resolução/unidades;
+4. aplica trilhas/vias ao *working board*, sem commit automático.
 
-Retorno:
+Retorno típico:
 
 ```json
 { "ok": true, "tracks": 128, "vias": 14, "pending_commit": true }
@@ -124,26 +127,23 @@ Retorno:
 Nada foi gravado ainda — reveja antes de aceitar:
 
 ```text
-design_preview     # diff estruturado + DRC nativo + render + advice (citado)
-design_commit      # verifica (estrutural + DRC) e grava; bloqueia em erros
+design_preview     # diff + DRC/ERC + render + advice
+design_commit      # verifica e grava; bloqueia em erros
 # ou
-design_rollback    # descarta o resultado do autorouter
+design_rollback    # descarta o resultado
 ```
 
-O commit roda o portão de verificação (checagens estruturais + DRC/ERC nativo do
-KiCAD). Se houver violação de erro, o commit é **bloqueado** e o working board fica
-intacto para você ajustar.
+O commit roda o portão de verificação. Se houver violação de nível erro, o commit é
+**bloqueado** e o estado de trabalho fica disponível para correção.
 
 ---
 
-## Alternativa — Importar um SES já existente
-
-Se você já tem um `.ses` (roteou pelo GUI do Freerouting, por exemplo):
+## Alternativa — Importar um SES existente
 
 ```text
 route_import_ses
   ses_path = ~/projetos/minha_placa/board.ses
-  replace  = true     # substitui o roteamento atual (padrão)
+  replace  = true
 ```
 
 ---
@@ -152,11 +152,11 @@ route_import_ses
 
 | Sintoma | Causa provável | Solução |
 | --- | --- | --- |
-| `route_check` → `ready:false` | sem Java/Docker/Podman ou jar ausente | instale o runtime / baixe o `.jar` no caminho |
-| "Freerouting is not available" | idem acima | rode `route_check` e corrija |
-| `.ses` vazio / poucas trilhas | DSN sem nets/regras | refaça o export do DSN após F8 no KiCAD |
-| Trilhas em posição errada | unidade/resolução do SES | o parser respeita `(resolution …)`; confirme o DSN de origem |
-| Quero ver o que mudou | — | use `design_preview` antes do `design_commit` |
+| `route_check` → `ready:false` | sem Java/Docker/Podman ou jar ausente | instale o runtime / baixe o `.jar` |
+| "Freerouting is not available" | idem | rode `route_check` e corrija |
+| `.ses` vazio / poucas trilhas | DSN sem nets/regras | refaça o export após F8 no KiCad |
+| Trilhas em posição errada | unidade/resolução do SES | confirme a resolução do DSN/SES de origem |
+| Quero ver o que mudou | — | use `design_preview` antes de `design_commit` |
 
 ---
 
@@ -164,10 +164,11 @@ route_import_ses
 
 | Tool | O que faz |
 | --- | --- |
-| `route_check` | informa runtime (Java/Docker/Podman) e se o jar está presente |
-| `route_export_dsn` | tenta exportar DSN via IPC; senão orienta o export manual |
+| `route_check` | informa runtime e presença do jar |
+| `route_export_dsn` | tenta exportar DSN via backend disponível; senão orienta o export manual |
 | `route_autoroute` | DSN → Freerouting → SES → aplica ao board |
 | `route_import_ses` | importa um `.ses` já roteado |
 | `design_preview` / `design_commit` / `design_rollback` | revisar e confirmar/descartar |
 
-Veja também o [README](../README.md) e a [arquitetura](ARQUITETURA.md).
+Veja também o [README](../README.md), o [índice de documentação](README.md) e a
+[arquitetura](ARQUITETURA.md).
