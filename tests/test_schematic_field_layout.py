@@ -34,8 +34,8 @@ def _library(lib_id: str, raw: str, pins: list[Pin]) -> SchLibrarySymbol:
     )
 
 
-def test_vertical_two_pin_fields_move_to_the_right_of_symbol_body():
-    library = _library(
+def _resistor_library() -> SchLibrarySymbol:
+    return _library(
         "Device:R",
         DEVICE_R,
         [
@@ -43,6 +43,9 @@ def test_vertical_two_pin_fields_move_to_the_right_of_symbol_body():
             Pin(number="2", electrical_type=ElectricalType.PASSIVE),
         ],
     )
+
+
+def test_vertical_two_pin_fields_align_to_the_right_with_clearance():
     symbol = SchSymbol(
         lib_id="Device:R",
         reference="R1",
@@ -51,11 +54,28 @@ def test_vertical_two_pin_fields_move_to_the_right_of_symbol_body():
         y=50.8,
     )
 
-    text = _symbol_instance(symbol, "divider", library)
+    text = _symbol_instance(symbol, "divider", _resistor_library())
 
-    assert '(property "Reference" "R1" (at 80.01 49.53 0)' in text
-    assert '(property "Value" "10k" (at 80.01 52.07 0)' in text
+    assert '(property "Reference" "R1" (at 81.28 49.53 0)' in text
+    assert '(property "Value" "10k" (at 81.28 52.07 0)' in text
     assert text.count("(justify left)") == 2
+
+
+def test_horizontal_two_pin_fields_are_centered_above_and_below():
+    symbol = SchSymbol(
+        lib_id="Device:R",
+        reference="R1",
+        value="10k",
+        x=76.2,
+        y=50.8,
+        rotation=90.0,
+    )
+
+    text = _symbol_instance(symbol, "divider", _resistor_library())
+
+    assert '(property "Reference" "R1" (at 76.2 45.72 0)' in text
+    assert '(property "Value" "10k" (at 76.2 55.88 0)' in text
+    assert "(justify left)" not in text
 
 
 def test_power_reference_is_hidden_and_supply_value_is_above_the_glyph():

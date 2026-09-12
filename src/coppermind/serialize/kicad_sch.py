@@ -17,6 +17,10 @@ from coppermind.schematic.models import (
 )
 
 _VERSION = "20231120"  # KiCad 8 format; KiCad 9/10 open and upgrade it.
+_FIELD_CLEARANCE = 5.08
+_FIELD_STACK_OFFSET = 1.27
+_POWER_VALUE_OFFSET = 3.81
+_POWER_REFERENCE_OFFSET = 2.54
 
 
 def _indent(text: str, spaces: int) -> str:
@@ -74,31 +78,86 @@ def _two_pin_orientation(sym, library: SchLibrarySymbol) -> str | None:
 
 
 def _field_layout(sym, library: SchLibrarySymbol) -> dict[str, tuple[float, float, float, bool, str | None]]:
-    """Place instance fields away from symbol bodies and hide KiCad special refs."""
+    """Place instance fields with deterministic body/wire clearance.
+
+    Two-pin symbols are aligned according to their displayed axis: vertical
+    parts get a compact left-justified field stack to the right, while
+    horizontal parts get centered fields above/below the body. Other symbols
+    use the safer top/bottom fallback. Power glyphs retain their conventional
+    value side and hide their generated reference.
+    """
     token = sym.lib_id.lower()
     is_power = token.startswith("power:")
     hidden_reference = is_power or sym.reference.startswith("#")
 
     if is_power:
-        value_y = sym.y + 3.81
+        value_y = sym.y + _POWER_VALUE_OFFSET
         if not any(name in token for name in ("gnd", "vss", "pwr_flag")):
-            value_y = sym.y - 3.81
+            value_y = sym.y - _POWER_VALUE_OFFSET
         return {
-            "Reference": (sym.x, sym.y - 2.54, 0.0, hidden_reference, None),
+            "Reference": (
+                sym.x,
+                sym.y - _POWER_REFERENCE_OFFSET,
+                0.0,
+                hidden_reference,
+                None,
+            ),
             "Value": (sym.x, value_y, 0.0, False, None),
         }
 
     orientation = _two_pin_orientation(sym, library)
     if orientation == "vertical":
-        field_x = sym.x + 3.81
+        field_x = sym.x + _FIELD_CLEARANCE
         return {
-            "Reference": (field_x, sym.y - 1.27, 0.0, hidden_reference, "left"),
-            "Value": (field_x, sym.y + 1.27, 0.0, False, "left"),
+            "Reference": (
+                field_x,
+                sym.y - _FIELD_STACK_OFFSET,
+                0.0,
+                hidden_reference,
+                "left",
+            ),
+            "Value": (
+                field_x,
+                sym.y + _FIELD_STACK_OFFSET,
+                0.0,
+                False,
+                "left",
+            ),
+        }
+
+    if orientation == "horizontal":
+        return {
+            "Reference": (
+                sym.x,
+                sym.y - _FIELD_CLEARANCE,
+                0.0,
+                hidden_reference,
+                None,
+            ),
+            "Value": (
+                sym.x,
+                sym.y + _FIELD_CLEARANCE,
+                0.0,
+                False,
+                None,
+            ),
         }
 
     return {
-        "Reference": (sym.x, sym.y - 2.54, 0.0, hidden_reference, None),
-        "Value": (sym.x, sym.y + 2.54, 0.0, False, None),
+        "Reference": (
+            sym.x,
+            sym.y - _FIELD_CLEARANCE,
+            0.0,
+            hidden_reference,
+            None,
+        ),
+        "Value": (
+            sym.x,
+            sym.y + _FIELD_CLEARANCE,
+            0.0,
+            False,
+            None,
+        ),
     }
 
 
