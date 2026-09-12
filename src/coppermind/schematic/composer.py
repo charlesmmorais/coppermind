@@ -23,7 +23,7 @@ _GRID = 2.54
 _HORIZONTAL_LEVEL_GAP = 50.8
 _VERTICAL_ROW_GAP = 50.8
 _POWER_CHAIN_GAP = 25.4
-_POWER_FLAG_OFFSET = 25.4
+_POWER_FLAG_OFFSET = 15.24
 _POWER_SYMBOL_OFFSET = 15.24
 
 
@@ -147,7 +147,6 @@ def symbol_pin_geometry(library: SchLibrarySymbol, unit: int) -> dict[str, PinGe
 
 def _snap(value: float) -> float:
     return round(value / _GRID) * _GRID
-
 
 def _coord(value: float) -> float:
     """Normalize float noise without moving an electrical connection point."""
@@ -297,8 +296,7 @@ def _place_symbol_pin_at(
         return False
     symbol.rotation = 0.0
     dx, dy = _rotate(pin.x, -pin.y, symbol.rotation)
-    symbol.x = _coord(target[0] - dx)
-    symbol.y = _coord(target[1] - dy)
+    symbol.x = _coord(target[0] - dx)    symbol.y = _coord(target[1] - dy)
     return True
 
 
@@ -447,8 +445,7 @@ def _layout_generic_group(
             if symbol is None:
                 continue
             symbol.x = _snap(38.1 + level * _HORIZONTAL_LEVEL_GAP)
-            symbol.y = _snap(y_base + row * _VERTICAL_ROW_GAP)
-            symbol.rotation = 0.0
+            symbol.y = _snap(y_base + row * _VERTICAL_ROW_GAP)            symbol.rotation = 0.0
 
     marker_refs = set(refs) - primary
     if marker_refs:
@@ -597,8 +594,7 @@ def compose_schematic(circuit: Circuit, schematic: Schematic) -> ComposeReport:
         if not endpoints:
             continue
         wires, label, junctions = _route_net(net_name, endpoints)
-        schematic.wires.extend(wires)
-        if not _net_has_named_power_symbol(circuit, net_name):
+        schematic.wires.extend(wires)        if not _net_has_named_power_symbol(circuit, net_name):
             schematic.labels.append(label)
         schematic.junctions.extend(junctions)
 
