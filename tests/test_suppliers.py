@@ -1,3 +1,5 @@
+import pytest
+
 from coppermind.integrations.suppliers.base import SupplierPart
 from coppermind.integrations.suppliers.jlcpcb import parse_jlcsearch_part
 from coppermind.integrations.suppliers.offline import OfflineCatalogProvider
@@ -18,6 +20,12 @@ def test_effective_total_adds_extended_fee():
     assert effective_total(ext, 10) == 0.001 * 10 + 3.0  # cheaper unit, +$3 fee
 
 
+def test_effective_total_rejects_unknown_price():
+    part = SupplierPart(part_id="NO_PRICE", description="d", stock=1000)
+    with pytest.raises(ValueError, match="has no price"):
+        effective_total(part, 10)
+
+
 def test_pick_cheapest_prefers_basic_when_fee_dominates():
     parts = [
         SupplierPart(part_id="B", description="d", basic=True, stock=1_000_000, price_breaks={1: 0.01}),
@@ -30,6 +38,14 @@ def test_pick_cheapest_prefers_basic_when_fee_dominates():
 def test_pick_cheapest_respects_stock():
     parts = [SupplierPart(part_id="B", description="d", basic=True, stock=5, price_breaks={1: 0.01})]
     assert pick_cheapest(parts, 100) is None
+
+
+def test_pick_cheapest_skips_parts_without_pricing():
+    parts = [
+        SupplierPart(part_id="NO_PRICE", description="d", stock=1000),
+        SupplierPart(part_id="PRICED", description="d", basic=True, stock=1000, price_breaks={1: 0.02}),
+    ]
+    assert pick_cheapest(parts, 10).part_id == "PRICED"
 
 
 def test_offline_provider_search_and_alternatives():
