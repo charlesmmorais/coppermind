@@ -1,27 +1,36 @@
-"""The Phase-0 core tool set (7 tools).
+"""Always-visible high-frequency tools.
 
-Naming follows the `resource_action` convention from the architecture doc so the
-set stays searchable as it grows. Each function takes the Session first and
-returns a plain dict (MCP-friendly, JSON-serializable). Mutating tools write to
-the active transaction's working copy — nothing is persisted until
-`design_commit`.
+The primary agent surface is semantic: components, real symbol pins and nets.
+Coordinate-level PCB operations remain implemented for compatibility, but are
+routed on demand instead of occupying the LLM's default context.
 """
 
 from __future__ import annotations
 
+from coppermind.circuit import Circuit
 from coppermind.domain import operations as ops
 from coppermind.domain.models import Layer
 from coppermind.intelligence.critique import critique as run_critique
+from coppermind.schematic.models import Schematic
 from coppermind.session import Session
+from coppermind.tools.circuit import CIRCUIT_TOOLS
 from coppermind.transactions.manager import Document
 
 
 def project_create(session: Session, name: str, width_mm: float, height_mm: float) -> dict:
-    """Create a new project with a rectangular board outline."""
+    """Create a project and initialize its board, schematic and semantic Circuit IR."""
     board = ops.create_board(name, width_mm, height_mm)
     session.backend.apply(board)
     session.document = Document(board, session.backend)
-    return {"ok": True, "project": name, "board": f"{width_mm}x{height_mm}mm"}
+    session.schematic = Schematic(name=name)
+    session.circuit = Circuit(name=name)
+    return {
+        "ok": True,
+        "project": name,
+        "board": f"{width_mm}x{height_mm}mm",
+        "circuit_ir": True,
+        "schematic": True,
+    }
 
 
 def component_place(
@@ -34,7 +43,7 @@ def component_place(
     rotation: float = 0.0,
     layer: str = "F.Cu",
 ) -> dict:
-    """Place a component on the working copy (uncommitted)."""
+    """Legacy: place a PCB component by coordinates (routed compatibility tool)."""
     doc = session.require_document()
     ops.add_component(
         doc.working(), reference, footprint, x_mm, y_mm, value, rotation, Layer(layer)
@@ -43,7 +52,7 @@ def component_place(
 
 
 def net_create(session: Session, name: str) -> dict:
-    """Create an electrical net on the working copy (uncommitted)."""
+    """Legacy: create a PCB-domain net directly (routed compatibility tool)."""
     doc = session.require_document()
     ops.create_net(doc.working(), name)
     return {"ok": True, "net": name, "pending_commit": True}
@@ -59,7 +68,7 @@ def net_route(
     width_mm: float = 0.25,
     layer: str = "F.Cu",
 ) -> dict:
-    """Route a copper trace segment on the working copy (uncommitted)."""
+    """Legacy: route one PCB trace segment by coordinates (routed compatibility tool)."""
     doc = session.require_document()
     ops.route_track(
         doc.working(), net, (x1_mm, y1_mm), (x2_mm, y2_mm), width_mm, Layer(layer)
@@ -68,16 +77,13 @@ def net_route(
 
 
 def design_preview(session: Session) -> dict:
-    """Preview pending changes: structured diff, verification report, render.
-
-    This is the safety surface — see what will change, what rules fire (including
-    native KiCAD DRC), and a render of the result, all *before* committing.
-    """
+    """Preview pending PCB changes: structured diff, verification report, render."""
     doc = session.require_document()
     diff, violations = doc.preview()
     working = doc.working()
     render = session.backend.render(working)
     advice = run_critique(working)
+    circuit = session.circuit
     return {
         "diff": diff.summary(),
         "diff_detail": diff.model_dump(),
@@ -85,11 +91,12 @@ def design_preview(session: Session) -> dict:
         "would_block": any(v.severity >= 30 for v in violations),
         "advice": [v.model_dump() for v in advice],
         "render_svg": render.decode("utf-8") if render else None,
+        "circuit": circuit.model_dump() if circuit is not None else None,
     }
 
 
 def design_commit(session: Session) -> dict:
-    """Verify and commit pending changes. Blocked by ERROR-level violations."""
+    """Verify and commit pending PCB changes. Blocked by ERROR-level violations."""
     doc = session.require_document()
     result = doc.commit()
     return {
@@ -100,7 +107,7 @@ def design_commit(session: Session) -> dict:
 
 
 def design_rollback(session: Session) -> dict:
-    """Discard all pending (uncommitted) changes."""
+    """Discard all pending PCB-domain changes."""
     doc = session.require_document()
     doc.rollback()
     return {"ok": True, "rolled_back": True}
@@ -108,9 +115,7 @@ def design_rollback(session: Session) -> dict:
 
 CORE_TOOLS = (
     project_create,
-    component_place,
-    net_create,
-    net_route,
+    *CIRCUIT_TOOLS,
     design_preview,
     design_commit,
     design_rollback,
