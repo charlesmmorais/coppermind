@@ -20,8 +20,8 @@ from coppermind.schematic.models import Junction, NetLabel, Schematic, SchLibrar
 _TOKEN_RE = re.compile(r'"(?:\\.|[^"\\])*"|\(|\)|[^\s()]+')
 _UNIT_SUFFIX_RE = re.compile(r"_(\d+)_(\d+)$")
 _GRID = 2.54
-_HORIZONTAL_LEVEL_GAP = 35.56
-_VERTICAL_ROW_GAP = 20.32
+_HORIZONTAL_LEVEL_GAP = 50.8
+_VERTICAL_ROW_GAP = 50.8
 _POWER_CHAIN_GAP = 25.4
 _POWER_FLAG_OFFSET = 25.4
 
