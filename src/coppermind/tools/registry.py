@@ -10,11 +10,14 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
 
 from coppermind.session import Session
 from coppermind.tools.composer import COMPOSER_ROUTED_TOOLS
 from coppermind.tools.core import component_place, net_create, net_route
 from coppermind.tools.routed import ROUTED_TOOLS
+
+ToolCallable = Callable[..., dict]
 
 _CATEGORY_BY_PREFIX = {
     "project_": "project",
@@ -45,7 +48,7 @@ class ToolSpec:
     name: str
     category: str
     summary: str
-    func: Callable[..., dict]
+    func: ToolCallable
     parameters: list[str]
 
     def schema(self) -> dict:
@@ -57,7 +60,7 @@ class ToolSpec:
         }
 
 
-def _spec_from_func(func: Callable[..., dict]) -> ToolSpec:
+def _spec_from_func(func: ToolCallable) -> ToolSpec:
     params = [p for p in inspect.signature(func).parameters if p != "session"]
     summary = (func.__doc__ or "").strip().splitlines()[0] if func.__doc__ else ""
     return ToolSpec(
@@ -72,7 +75,7 @@ def _spec_from_func(func: Callable[..., dict]) -> ToolSpec:
 class ToolRegistry:
     """Holds routed tools and powers the discovery operations."""
 
-    def __init__(self, funcs: tuple[Callable[..., dict], ...]) -> None:
+    def __init__(self, funcs: tuple[ToolCallable, ...]) -> None:
         self._specs: dict[str, ToolSpec] = {}
         for fn in funcs:
             spec = _spec_from_func(fn)
@@ -116,4 +119,8 @@ class ToolRegistry:
 
 
 _ROUTED_AGENT_TOOLS = tuple(fn for fn in ROUTED_TOOLS if fn.__name__ not in _AGENT_HIDDEN)
-REGISTRY = ToolRegistry(_ROUTED_AGENT_TOOLS + COMPOSER_ROUTED_TOOLS + _LEGACY_ROUTED)
+_ALL_ROUTED_TOOLS = cast(
+    tuple[ToolCallable, ...],
+    _ROUTED_AGENT_TOOLS + COMPOSER_ROUTED_TOOLS + _LEGACY_ROUTED,
+)
+REGISTRY = ToolRegistry(_ALL_ROUTED_TOOLS)
