@@ -81,21 +81,22 @@ def _safe_geometry_autofix(schematic: Schematic) -> list[str]:
         if a == b:
             corrections.append("removed zero-length wire")
             continue
-        key = tuple(sorted((a, b)))
-        if key in unique:
+        ordered = sorted((a, b))
+        wire_key: tuple[tuple[float, float], tuple[float, float]] = (ordered[0], ordered[1])
+        if wire_key in unique:
             corrections.append("removed duplicate wire")
             continue
-        unique[key] = wire
+        unique[wire_key] = wire
     schematic.wires = list(unique.values())
 
     seen_labels: set[tuple[str, float, float]] = set()
     labels = []
     for label in schematic.labels:
-        key = (label.text, label.x, label.y)
-        if key in seen_labels:
+        label_key = (label.text, label.x, label.y)
+        if label_key in seen_labels:
             corrections.append(f"removed duplicate label {label.text}")
             continue
-        seen_labels.add(key)
+        seen_labels.add(label_key)
         labels.append(label)
     schematic.labels = labels
     return corrections
