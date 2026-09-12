@@ -7,7 +7,7 @@ detail owned by the composer rather than prompt context.
 
 from __future__ import annotations
 
-from coppermind.circuit import Component, Net, PinRef
+from coppermind.circuit import Component, Net, Pin, PinRef
 from coppermind.libraries.catalog import find_symbols
 from coppermind.schematic.models import (
     SchLibraryDefinition,
@@ -65,7 +65,7 @@ def component_add(
             f"symbol '{symbol}' has units {units}; requested unit {unit} is not available"
         )
 
-    pins = {}
+    pins: dict[str, Pin] = {}
     for pin in resolved.pins:
         pins.setdefault(pin.number, pin)
     component = Component(
