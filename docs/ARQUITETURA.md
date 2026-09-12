@@ -1,258 +1,444 @@
-# Coppermind — Servidor MCP de Projeto de PCB com IA
+# Coppermind — Arquitetura atual
 
-**Documento de Arquitetura e Plano**
-Versão 0.1 — rascunho · Junho de 2026
-Nome de trabalho: **Coppermind** (placeholder — copper = cobre da PCB + "mind")
+**Status:** implementação consolidada após as Fases 1–5 do fluxo semântico de
+esquemático e introdução dos transports `stdio` + Streamable HTTP.
 
----
-
-## 1. Visão
-
-Um servidor MCP que não apenas *executa comandos* no KiCAD, mas *raciocina sobre projeto eletrônico*. A diferença central em relação ao projeto de referência (mixelpixx/KiCAD-MCP-Server) é deslocar o produto de uma **camada fina de tradução** ("traduza esta frase numa chamada de API do pcbnew") para um **copiloto de engenharia** que entende intenção, valida continuamente, conhece boas práticas de EE e mantém o humano no controle de um fluxo iterativo e auditável.
-
-Frase-guia: *"Descreva o que você quer projetar; o sistema propõe, verifica, explica e só então aplica — e tudo é reversível."*
-
-### Os quatro pilares (definidos por você)
-
-1. **Arquitetura limpa** — uma base de código coerente, testável, com documentação que corresponde à realidade. Sem "router fantasma", sem contradições de versão, sem dívida acidental.
-2. **Inteligência de design** — conhecimento embarcado de topologias, regras de boas práticas, otimização de layout e sugestão de circuitos, não só CRUD de componentes.
-3. **Confiabilidade / verificação** — validação automática antes de cada escrita, DRC/ERC integrados ao loop, e impossibilidade estrutural de gerar estados inválidos sem aviso.
-4. **Experiência / colaboração** — feedback visual rico, histórico versionado, undo/redo de verdade e um fluxo humano-IA com previsões e confirmações.
+O objetivo do Coppermind é ser um **copiloto de engenharia eletrônica**, não um
+tradutor de linguagem natural para coordenadas CAD. A intenção elétrica vive num
+modelo semântico próprio; KiCad é o motor CAD e de verificação/materialização.
 
 ---
 
-## 2. O que aprendemos com o projeto de referência
+## 1. Princípios
 
-Análise honesta do mixelpixx/KiCAD-MCP-Server (~1,2k stars). Ele provou a demanda e algumas boas ideias — vamos preservá-las e corrigir o resto.
-
-### 2.1 O que vale herdar
-
-- Backend híbrido com auto-detecção (a ideia certa, mesmo que a execução precise mudar).
-- Resources MCP expondo estado do projeto para leitura sem efeitos colaterais.
-- Solução engenhosa de manipulação de schematic via injeção de S-expression quando a biblioteca não cria do zero.
-- Integrações úteis: JLCPCB (catálogo + preço/estoque), Freerouting, enriquecimento de datasheet.
-
-### 2.2 Falhas a evitar (e o que faremos diferente)
-
-| Falha no projeto de referência | Causa raiz | Nossa decisão |
-| --- | --- | --- |
-| Documentação contraditória (README diz 122 tools / inventário diz 137; versões divergentes) | Docs escritas à mão, fora de sincronia com o código | **Docs geradas a partir do código** (single source of truth). A contagem e o schema de cada tool saem do registry em build/CI. |
-| "Router pattern" anunciado mas inerte (todas as tools sempre visíveis; economia de 70% não acontece) | Plano abandonado pela metade, sem CI que valide a alegação | **Progressive discovery real** com poucas tools sempre visíveis e descoberta sob demanda — medida e testada (ver §6). |
-| Ponte TypeScript ↔ Python (subprocesso, serialização, dois runtimes) | Decisão histórica; dobra a superfície de bugs e setup | **Uma única linguagem (Python)**, eliminando a ponte de processos (ver §5). |
-| Forte dependência do SWIG/`pcbnew`, com IPC apenas "experimental" | Foi o caminho mais fácil no KiCAD 8/9 | **IPC-first.** O SWIG será **removido no KiCAD 11 (fev/2027)**; construir sobre ele hoje é dívida garantida. |
-| Designs gerados por IA sem verificação obrigatória; disclaimer "use por sua conta e risco" | Sem camada de validação no loop | **Verificação não-opcional**: nada é escrito sem passar por validação; DRC/ERC fazem parte do ciclo, não de um passo final manual. |
-| Estado implícito, escritas diretas, difícil desfazer | Operações mutam o arquivo direto | **Modelo transacional** com preview, diff e rollback (snapshots automáticos + undo). |
-| Confiabilidade aferida por "test results" no README, não por CI público | Falta de harness de testes contra KiCAD real | **CI com KiCAD headless** validando cada tool ponta a ponta. |
-
-> Fato decisivo: o KiCAD 10 saiu em março/2026 (estável 10.0.3) e o **KiCAD 11, previsto para fev/2027, remove as bindings SWIG**. A API IPC (Protobuf, via `kicad-python`/`kipy`) é o futuro suportado. Qualquer projeto novo deve nascer IPC-first.
+1. **Intenção antes de geometria.** O agente trabalha com componentes, pinos, nets e
+   constraints. Coordenadas são derivadas por algoritmos determinísticos.
+2. **Circuit IR é a fonte de verdade elétrica.** O visual pode mudar; conectividade só
+   muda por operações semânticas explícitas.
+3. **Nada é escrito às cegas.** Preview, verificação, commit e rollback fazem parte do
+   fluxo normal.
+4. **ERC/DRC entram no gate.** Verificação não é um passo manual opcional no fim.
+5. **Símbolos reais.** Não existe fallback genérico de dois pinos para um símbolo que
+   não pôde ser resolvido.
+6. **IA não executa código arbitrário.** O modelo não recebe um shell ou `exec` livre.
+7. **Progressive discovery.** Tools de baixa frequência não ocupam o contexto sempre.
+8. **Degradação graciosa.** Núcleo/testes funcionam sem KiCad; integração real entra
+   quando `kicad-cli`/IPC estão disponíveis.
+9. **Privacidade explícita.** Reviewer multimodal externo é opt-in e possui fronteira
+   de dados documentada.
+10. **HTTP local por padrão.** Streamable HTTP é loopback-only e single-user por
+    processo.
 
 ---
 
-## 3. Princípios de arquitetura
+## 2. Visão de alto nível
 
-1. **Single source of truth.** Schemas, docs e capacidades derivam do código. Se não está no registry, não existe.
-2. **Tudo é reversível e previsível.** Toda mutação tem preview, diff e desfazer. O usuário vê o que vai acontecer antes de acontecer.
-3. **Verificação é parte do caminho feliz**, não um opcional. Estados inválidos são barrados na borda.
-4. **Conhecimento explícito e auditável.** As "boas práticas de EE" vivem numa base de regras versionada e citável — não escondidas em prompts.
-5. **Camadas com fronteiras nítidas.** Protocolo, orquestração, domínio e adaptador de KiCAD são separados e testáveis isoladamente.
-6. **Degradação graciosa.** Funciona com KiCAD aberto (IPC) e, quando possível, em modo batch; degrada com mensagens claras em vez de falhar em silêncio.
-7. **Privacidade por padrão.** Logs locais, sem telemetria implícita; avisos explícitos sobre o que sai da máquina (datasheets, APIs de fornecedor).
-
----
-
-## 4. Arquitetura em camadas
-
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
-│  Assistente de IA (Claude / outros clientes MCP)              │
-└───────────────────────────┬──────────────────────────────────┘
-                            │ MCP (JSON-RPC 2.0, stdio/HTTP)
-┌───────────────────────────▼──────────────────────────────────┐
-│  L1 · Camada de Protocolo (FastMCP / SDK Python oficial)      │
-│  - Registro de tools/resources/prompts                        │
-│  - Progressive discovery (poucas visíveis + busca sob demanda)│
-│  - Schemas gerados, validação de entrada (pydantic)           │
-└───────────────────────────┬──────────────────────────────────┘
-┌───────────────────────────▼──────────────────────────────────┐
-│  L2 · Orquestração & Transações                               │
-│  - Planner: intenção → plano de operações                     │
-│  - Transaction manager: begin/preview/commit/rollback         │
-│  - Diff engine + snapshots automáticos + undo/redo            │
-└──────────────┬───────────────────────────────┬───────────────┘
-┌──────────────▼────────────┐   ┌──────────────▼────────────────┐
-│  L3 · Núcleo de Domínio    │   │  L4 · Motor de Verificação     │
-│  (independente de KiCAD)   │   │  - DRC/ERC no loop             │
-│  - Modelo de board/sch     │◄─►│  - Regras de boas práticas EE  │
-│  - Knowledge base (regras, │   │  - Checagens pré-escrita       │
-│    topologias, heurísticas)│   │  - Relatórios explicáveis      │
-└──────────────┬─────────────┘   └────────────────────────────────┘
-┌──────────────▼────────────────────────────────────────────────┐
-│  L5 · Adaptador de KiCAD (Port/Adapter)                        │
-│  - Interface única `KicadBackend`                              │
-│  - IPCBackend (kicad-python/kipy) — PRIMÁRIO                   │
-│  - BatchBackend (CLI `kicad-cli` / headless) — fallback        │
-│  - SwigBackend (legado, só ≤ KiCAD 10) — opcional/depreciado   │
-└──────────────┬─────────────────────────────────────────────────┘
-┌──────────────▼─────────────────────────────────────────────────┐
-│  L6 · Integrações externas (plugáveis, isoladas)               │
-│  Fornecedores (JLCPCB/LCSC/Digi-Key), autorouter, datasheets   │
-└────────────────────────────────────────────────────────────────┘
+│ ChatGPT / Claude / outro cliente MCP                         │
+└───────────────┬───────────────────────────┬──────────────────┘
+                │                           │
+             stdio                 Streamable HTTP
+                │                    via tunnel/gateway
+                └──────────────┬────────────┘
+                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│ server.py / FastMCP                                           │
+│ 9 tools de núcleo + 5 tools de descoberta                    │
+└──────────────────────────────┬───────────────────────────────┘
+                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Circuit IR                                                    │
+│ Component · Pin · Net · Constraint                           │
+└──────────────────────────────┬───────────────────────────────┘
+                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Semantic Composer                                             │
+│ placement · net graph · wires · labels · junctions           │
+└──────────────────────────────┬───────────────────────────────┘
+                               ▼
+                    .kicad_sch real + KiCad ERC
+                               │
+                    ┌──────────┴──────────┐
+                    ▼                     ▼
+              SVG/PDF KiCad        feedback elétrico
+                    │
+                    ▼
+             Visual Reviewer
+                    │
+                    ▼
+             Layout Action IR
+                    │
+              accept / rollback
 ```
 
-A regra de ouro: **L3 (domínio) e L4 (verificação) não conhecem o KiCAD.** Eles operam sobre um modelo interno. Isso permite testar inteligência e verificação sem KiCAD rodando, e trocar o backend (IPC hoje, IPC-only amanhã) sem tocar na lógica.
+---
+
+## 3. Camadas
+
+| Camada | Código | Responsabilidade |
+| --- | --- | --- |
+| Protocolo | `server.py` | FastMCP, resources, transports e registro da superfície principal. |
+| Tools | `tools/` | núcleo semântico, discovery, registry e long tail roteada. |
+| Circuit IR | `circuit/` | modelo elétrico independente de KiCad. |
+| Libraries | `libraries/` | resolução de bibliotecas reais e metadados de pinos. |
+| Schematic | `schematic/` | modelo desenhável, composer, ERC, reviewer e auto-fix. |
+| Serialização | `serialize/` | materialização `.kicad_sch` e `.kicad_pcb`. |
+| Transações | `transactions/` | preview/commit/rollback, diff, undo/redo e timeline. |
+| Domínio PCB | `domain/` | board, componentes, tracks, vias e operações de PCB. |
+| Verificação | `verification/` | checks estruturais independentes de KiCad. |
+| Backends | `backends/` | IPC, batch `kicad-cli` e memória. |
+| Inteligência | `intelligence/` | knowledge base, critique, blocks e heurísticas. |
+| Integrações | `integrations/` | fornecedores, datasheets e Freerouting. |
+
+A regra central continua sendo: **domínio e verificação não dependem da API do
+KiCad**. A costura com KiCad fica nos adapters/backends e na materialização do
+esquemático.
 
 ---
 
-## 5. Decisão de stack (recomendação)
+## 4. Transports MCP
 
-Você pediu recomendação. **Python puro, com o SDK MCP oficial (FastMCP).**
+O executável `coppermind` suporta duas formas de conexão.
 
-Justificativa:
+### 4.1 stdio
 
-- **Elimina a ponte TS↔Python** do projeto de referência. Aquela ponte existe só porque o ecossistema MCP começou em TS; ela duplica setup, serialização e modos de falha. Um único runtime Python remove uma classe inteira de bugs e simplifica radicalmente a instalação.
-- **A integração com KiCAD é Python nativamente.** Tanto `kicad-python` (IPC) quanto o legado `pcbnew` (SWIG) são Python. Ficar em Python coloca o servidor na mesma linguagem do alvo.
-- **FastMCP** dá tools/resources/prompts com schema derivado de type hints + `pydantic`, o que sustenta o princípio "schema gerado do código".
-- **Trade-off aceito:** perde-se o tooling de tipos do TS, mas `pydantic` + `mypy` cobrem validação e tipagem estáticas o suficiente.
+```bash
+coppermind --transport stdio
+```
 
-Componentes concretos:
+É o default. Um host MCP local inicia o processo e usa stdin/stdout para o protocolo.
+É o caminho simples para Claude Desktop/Code e clientes locais.
 
-- Protocolo: `mcp` (SDK oficial Python) / FastMCP.
-- Validação: `pydantic v2`.
-- Backend KiCAD: `kicad-python` (kipy) como primário; `kicad-cli` para exportações batch headless.
-- Testes: `pytest` + harness com KiCAD headless em container (CI).
-- Empacotamento: `uv`/`pipx` para instalação de um comando; sem `npm install` + `npm build`.
+### 4.2 Streamable HTTP
 
----
+```bash
+coppermind --transport streamable-http --host 127.0.0.1 --port 8765 --path /mcp
+```
 
-## 6. Design das tools (resolvendo o "tool overload" de verdade)
+Endpoint:
 
-O problema real, confirmado pelas boas práticas atuais de MCP: cada definição de tool consome contexto antes mesmo de o modelo ler a pergunta; muitas tools degradam a seleção do modelo. O projeto de referência tem ~137 tools sempre visíveis e *afirma* economizar contexto sem fazê-lo.
+```text
+http://127.0.0.1:8765/mcp
+```
 
-Nossa abordagem:
+O bind é aceito somente em loopback (`127.0.0.1`, `localhost`, `::1`). Um cliente em
+nuvem deve chegar a esse endpoint através de um **túnel/gateway MCP autenticado**.
+O Coppermind não desativa as proteções de Host/Origin do SDK MCP.
 
-- **Núcleo enxuto sempre visível (~15–20 tools)** para o fluxo de 80% dos casos: criar/abrir projeto, colocar componente, rotear, validar, exportar, e as tools de descoberta.
-- **Progressive discovery real**: `search_tools` / `get_tool_schema` carregam definições sob demanda, *anexando após o breakpoint de cache* para não invalidar o cache do prompt (boa prática de 2026).
-- **Granularidade correta**: nada de uma mega-tool que ramifica em 15 ações por string; nada de exigir 3 chamadas sequenciais para uma operação óbvia (essas viram tools compostas, ex. `place_and_route_decoupling`).
-- **Nomenclatura consistente** `recurso_ação` (ex. `board_add_outline`, `component_place`, `net_route`) para busca e filtragem previsíveis.
-- **Verificável por CI**: um teste mede quantos tokens o conjunto visível consome e falha se ultrapassar o orçamento — a "economia de contexto" deixa de ser slogan e vira invariante testada.
+### 4.3 Por que não publicar diretamente
 
----
+`build_server()` cria uma única `Session` e a vincula às tools. Isso é apropriado ao
+modelo atual de um usuário/projeto por processo, mas não a um serviço multi-tenant.
+Além disso, não há autenticação de aplicação embutida.
 
-## 7. Inteligência de design (o grande diferencial)
+Logo, a fronteira suportada hoje é:
 
-Aqui está o que transforma "executor de comandos" em "copiloto". Implementado em L3, independente do KiCAD.
+```text
+1 processo Coppermind = 1 contexto de design confiável
+```
 
-### 7.1 Base de conhecimento de EE (explícita e versionada)
+Um serviço multiusuário futuro precisará isolar `Session`, workspace e permissões por
+identidade.
 
-Em vez de embutir conhecimento em prompts opacos, manter uma **knowledge base** de regras e padrões, versionada e citável:
-
-- **Regras de boas práticas**: capacitor de desacoplamento por pino de alimentação de CI; largura de trilha por corrente (tabelas IPC-2221); retorno de terra; isolamento para alta tensão; comprimento casado para pares diferenciais; antiilhas térmicas em planos.
-- **Padrões/topologias reutilizáveis ("design blocks")**: reguladores LDO/buck típicos, front-ends de USB, cristais com cargas, divisores, RC de reset, etc. — parametrizáveis.
-- **Heurísticas de placement/roteamento**: agrupar por função, posicionar desacoplamento junto ao pino, minimizar laços de corrente.
-
-Cada sugestão da IA **cita a regra** que a fundamenta ("largura 0,4 mm para 1 A em 1 oz, ΔT 10 °C — IPC-2221"). Isso é auditável e ensina o usuário.
-
-### 7.2 Como a inteligência opera
-
-- **Da intenção ao plano**: "faça um regulador 3,3 V" → o planner instancia um design block, escolhe valores, posiciona, e apresenta plano + justificativa *antes* de aplicar.
-- **Crítica proativa**: ao detectar um CI sem desacoplamento, ou trilha subdimensionada, sugere correção com a regra citada.
-- **Otimização de layout** como serviço de domínio (placement por função, sugestão de reorganização), separada da execução.
-
-> Importante manter a honestidade do projeto original quanto a limites: sugestões de IA **não substituem revisão de engenharia**. A diferença é que aqui a verificação é estrutural e as recomendações são rastreáveis — reduzindo, não eliminando, o risco.
+Detalhes: [TRANSPORTES.md](TRANSPORTES.md).
 
 ---
 
-## 8. Confiabilidade e verificação
+## 5. Superfície MCP
 
-### 8.1 Modelo transacional (nada de escrita cega)
+### 5.1 Tools sempre visíveis
 
-Toda mutação segue: **`begin` → aplicar no modelo → `preview` (diff + render) → validação → `commit` ou `rollback`.**
+O caminho principal tem **9 tools de núcleo**:
 
-- O usuário (ou a IA) vê um **diff** estruturado e um **render** do antes/depois antes de confirmar.
-- **Snapshots automáticos** antes de cada commit; **undo/redo** reais.
-- Falha de validação ⇒ rollback automático com explicação.
+```text
+project_create
+find_symbol
+component_add
+create_net
+connect_pins
+inspect_component
+design_preview
+design_commit
+design_rollback
+```
 
-### 8.2 Verificação no loop, não no fim
+Mais **5 tools de descoberta progressiva**:
 
-- **Pré-escrita**: checagens baratas (colisão de footprint, pino inexistente, net duplicada, fora dos limites da placa) barram operações inválidas na borda — o sistema é *estruturalmente* incapaz de aplicar muitos estados ruins.
-- **DRC/ERC integrados**: rodam automaticamente após mutações relevantes; violações voltam como dados estruturados e explicáveis, não texto solto.
-- **Relatórios explicáveis**: cada violação traz causa, regra e correção sugerida.
+```text
+list_tool_categories
+get_category_tools
+search_tools
+get_tool_schema
+execute_tool
+```
 
-### 8.3 Garantia de qualidade do próprio servidor
+Isso mantém a superfície default pequena sem remover capacidade.
 
-- **CI com KiCAD headless** (container) executa cada tool ponta a ponta contra um KiCAD real.
-- **Testes de propriedade**: gerar boards aleatórios válidos e garantir invariantes (ex.: todo commit que passa na validação abre no KiCAD sem erro).
-- **Testes de regressão** ancorados em projetos de exemplo (LED board, regulador, adaptador FFC).
+### 5.2 Tools roteadas
 
----
+A cauda longa inclui categorias como:
 
-## 9. Experiência e colaboração
+- esquemático (`schematic_compose`, `schematic_erc`, `schematic_visual_*`);
+- PCB e edição legada;
+- design intelligence;
+- fornecedores/datasheets;
+- autorroteamento;
+- variantes;
+- persistência/exportações.
 
-- **Feedback visual rico**: renders PNG/SVG do board e do schematic expostos como resources, atualizados a cada transação, com realce de diffs.
-- **Sessões versionadas**: histórico de operações como linha do tempo navegável; cada passo é um snapshot rotulado (evolução do `snapshot_project` do original, porém automático e estruturado).
-- **Confirmar/editar planos**: a IA propõe um plano com justificativa; o usuário aprova, ajusta ou rejeita parte dele antes da execução.
-- **Modo "explique"**: para qualquer estado ou sugestão, o servidor explica o porquê citando a knowledge base.
-- **Tempo real com a UI**: via IPC, mudanças aparecem imediatamente no KiCAD aberto, sem reload manual — agora como caminho primário, não experimental.
-
----
-
-## 10. Integrações (plugáveis e isoladas em L6)
-
-Mantidas atrás de interfaces, sem contaminar o domínio:
-
-- **Fornecedores**: JLCPCB/LCSC, com arquitetura aberta para Digi-Key/Mouser. Preço, estoque, Básico vs. Estendido, sugestão de alternativas e otimização de custo de montagem.
-- **Autorouter**: Freerouting (Java/Docker/Podman) atrás de uma interface `AutoRouter`, permitindo trocar de motor.
-- **Datasheets**: enriquecimento via LCSC e outras fontes, com avisos de privacidade sobre o que é consultado online.
-
----
-
-## 11. Roadmap incremental
-
-**Fase 0 — Fundação (prova de arquitetura)**
-SDK MCP em Python, `KicadBackend` (interface) + `IPCBackend`, modelo de domínio mínimo, transação begin/preview/commit/rollback, 5–6 tools núcleo, CI com KiCAD headless. *Critério de saída: criar projeto, colocar componente e rotear, tudo reversível e testado em CI.*
-
-**Fase 1 — Verificação no loop**
-DRC/ERC integrados, checagens pré-escrita, relatórios explicáveis, diffs e renders nos previews. *Critério: impossível aplicar estados inválidos comuns sem aviso.*
-
-**Fase 2 — Progressive discovery + paridade de tools**
-Núcleo enxuto + descoberta sob demanda com orçamento de contexto testado; cobrir board/component/routing/schematic/export com nomenclatura consistente.
-
-**Fase 3 — Inteligência de design**
-Knowledge base de EE versionada, design blocks parametrizáveis, crítica proativa com citação de regras, sugestões de placement.
-
-**Fase 4 — Colaboração e integrações**
-Linha do tempo versionada, modo "explique", fornecedores, autorouter, datasheets.
-
-**Fase 5 — Maturidade**
-Schematics hierárquicos, otimização de layout avançada, suporte a variantes (recurso novo do KiCAD 10), preparação para o mundo IPC-only do KiCAD 11.
+`symbol_add` e `wire_add` são deliberadamente escondidas do agente. Elas podem existir
+internamente para compatibilidade/serialização, mas o LLM não deve regredir para
+desenhar um esquemático por coordenadas.
 
 ---
 
-## 12. Riscos e mitigações
+## 6. Circuit IR
 
-| Risco | Mitigação |
-| --- | --- |
-| IPC exige KiCAD rodando (não abre arquivos headless puros) | `BatchBackend` via `kicad-cli` para exportação/validação headless; gerenciamento de ciclo de vida da instância KiCAD. |
-| Remoção do SWIG no KiCAD 11 quebra o legado | IPC-first desde o dia 1; SWIG isolado atrás da interface e marcado depreciado. |
-| API IPC ainda evoluindo entre 10.x e 11 | Adaptador fino + testes de contrato contra cada versão no CI. |
-| Inteligência de IA gerar designs sutilmente errados | Verificação estrutural + citação de regras + revisão humana obrigatória declarada; nunca prometer correção garantida. |
-| Escopo ambicioso (4 pilares de uma vez) | Roadmap incremental com critérios de saída; cada fase entrega valor isolado. |
-| Manutenção da knowledge base de EE | Regras versionadas, com fonte citada (IPC etc.) e testes; contribuição comunitária estruturada. |
+A intenção elétrica é representada antes do desenho.
+
+```text
+Circuit
+ ├─ components: Component
+ │    └─ pins: Pin
+ ├─ nets: Net
+ │    └─ nodes: PinRef
+ └─ constraints: Constraint
+```
+
+Exemplo conceitual:
+
+```text
+Component U1 = ESP32-S3
+Component C1 = 100 nF
+Net +3V3 = [U1.VDD, C1.1]
+Net GND  = [U1.GND, C1.2]
+Constraint = decoupling C1 near U1
+```
+
+O Circuit IR não carrega a obrigação de decidir onde desenhar um wire. Essa decisão
+pertence ao composer/layout.
 
 ---
 
-## 13. Resumo das decisões-chave
+## 7. Símbolos reais do KiCad
 
-1. **Python puro + FastMCP** — elimina a ponte TS↔Python.
-2. **IPC-first** — alinhado ao KiCAD 11 (SWIG removido em fev/2027); SWIG só como legado isolado.
-3. **Domínio e verificação independentes do KiCAD** — testáveis sem o KiCAD, backend trocável.
-4. **Modelo transacional com preview/diff/rollback** — nada de escrita cega; tudo reversível.
-5. **Verificação no caminho feliz** — DRC/ERC e checagens pré-escrita no loop, não opcionais.
-6. **Progressive discovery medido por CI** — a economia de contexto vira invariante testada, não slogan.
-7. **Conhecimento de EE explícito, versionado e citável** — inteligência auditável, não prompt mágico.
-8. **Docs e schemas gerados do código** — fim das contradições de versão/contagem.
-9. **CI com KiCAD headless** — confiabilidade comprovada, não declarada.
+O resolver trabalha com bibliotecas instaladas/configuradas:
+
+- bibliotecas empacotadas `*.kicad_sym`;
+- formato unpacked `*.kicad_symdir/<Symbol>.kicad_sym`;
+- `sym-lib-table` de projeto;
+- diretórios configurados por ambiente.
+
+O resolver extrai pinos reais, incluindo número, nome, tipo elétrico, unidade e
+herança (`extends`). A definição real do símbolo pode ser embutida no `.kicad_sch`.
+
+**Invariante:** símbolo não encontrado gera erro explícito. Não existe caixa genérica
+de dois pinos para “continuar mesmo assim”.
 
 ---
 
-*Documento de planejamento. Próximos passos sugeridos: (a) validar nome e escopo da Fase 0; (b) prototipar o `KicadBackend` + uma transação ponta a ponta contra KiCAD 10 via IPC; (c) montar o esqueleto do repositório e o CI headless.*
+## 8. Fases semânticas do esquemático
+
+### Fase 1 — Circuit IR + símbolos reais
+
+Separou intenção elétrica de geometria e eliminou o fallback sintético.
+
+### Fase 2 — Tools semânticas
+
+O agente passou a operar com:
+
+```text
+find_symbol → component_add → create_net → connect_pins → inspect_component
+```
+
+### Fase 3 — Semantic Composer
+
+O lowering passou a ser automático:
+
+```text
+Circuit IR
+ → placement determinístico
+ → pontos reais dos pinos
+ → net graph
+ → roteamento ortogonal
+ → wires/labels/junctions
+ → .kicad_sch
+ → kicad-cli sch erc
+```
+
+Correções automáticas dessa fase são restritas a geometria segura, como duplicatas e
+segmentos degenerados. O sistema não inventa conexão elétrica para “zerar o ERC”.
+
+### Fase 4 — Visual Reviewer
+
+O fluxo exporta SVG/PDF reais do KiCad e calcula métricas de legibilidade:
+
+- overlap e espaçamento;
+- crossings;
+- comprimento excessivo;
+- fluxo esquerda→direita quando inferível;
+- densidade/aspect ratio;
+- agrupamento visual via crítico multimodal opcional.
+
+O reviewer externo é **critic**, não executor direto.
+
+### Fase 5 — Visual Auto-Fix
+
+Findings seguros são convertidos para um Layout Action IR restrito:
+
+```text
+move_near
+move_group
+align
+distribute
+compact_block
+separate_blocks
+```
+
+Aplicação é copy-on-write. Um candidato só é aceito se:
+
+- Circuit IR permanecer invariável;
+- nenhum pino ficar sem geometria;
+- não surgir nova violação ERC;
+- score determinístico não regredir;
+- score final melhorar.
+
+Caso contrário, a cópia é descartada.
+
+Detalhes: [VISUAL_AUTOFIX.md](VISUAL_AUTOFIX.md).
+
+---
+
+## 9. Modelo transacional
+
+PCB e estado semântico participam do mesmo conceito de revisão:
+
+```text
+working state
+   ↓
+design_preview
+   ↓
+checks + ERC/DRC + render + visual review
+   ↓
+┌───────────────┬────────────────┐
+│ design_commit │ design_rollback│
+└───────────────┴────────────────┘
+```
+
+`design_commit` não deve publicar estado semanticamente bloqueante. O histórico de
+board mantém undo/redo e timeline; o estado semântico possui snapshots de commit e
+rollback correspondentes.
+
+---
+
+## 10. Backends KiCad
+
+### MemoryBackend
+
+Usado para domínio, testes e desenvolvimento offline.
+
+### IPCBackend
+
+Usa `kicad-python`/kipy para interagir com KiCad quando uma sessão IPC está realmente
+acessível. A detecção testa conexão real em vez de apenas construir um cliente lazy.
+
+### BatchBackend / kicad-cli
+
+Usado para tarefas headless de arquivo, DRC, ERC e renderizações.
+
+No KiCad 10, o caminho de esquemático é híbrido: **arquivo real + CLI**. A API de
+esquemático do KiCad 11 poderá assumir materialização live progressivamente, sem
+mudar Circuit IR nem as tools semânticas.
+
+---
+
+## 11. Segurança e confiança
+
+### 11.1 Sem `exec` arbitrário
+
+A arquitetura não expõe um executor Python geral ao LLM. Ações são tools tipadas.
+
+### 11.2 Geometria não pode alterar conectividade silenciosamente
+
+Visual Reviewer e Auto-Fix só atuam em `x/y` e geometria derivada. O Circuit IR é
+comparado antes/depois.
+
+### 11.3 Paths validados
+
+Tools que leem/escrevem artefatos restringem extensões e normalizam caminhos através
+da camada `safety.py`.
+
+### 11.4 Provider multimodal opt-in
+
+Sem `COPPERMIND_VISUAL_PROVIDER`, nenhuma chamada de IA visual externa é realizada.
+Quando ativado, PDF + contexto limitado saem da máquina; a fronteira é descrita em
+[MULTIMODAL_VISUAL_REVIEW.md](MULTIMODAL_VISUAL_REVIEW.md).
+
+### 11.5 HTTP local
+
+Streamable HTTP é loopback-only e o processo deve ser acessado externamente apenas
+através de uma camada confiável de tunnel/gateway.
+
+---
+
+## 12. CI e invariantes executáveis
+
+O workflow de CI verifica:
+
+- Python 3.11 e 3.12;
+- Ruff;
+- pytest + cobertura;
+- mypy;
+- integração bloqueante com KiCad 10;
+- `.kicad_sch` real;
+- ERC real;
+- SVG/PDF reais;
+- Visual Auto-Fix com Circuit IR invariável.
+
+O job de integração não é mais `continue-on-error`: regressão contra KiCad deve
+quebrar o CI.
+
+---
+
+## 13. Limitações atuais
+
+1. **Sessão HTTP única por processo.** Não existe isolamento multi-tenant.
+2. **Sem auth HTTP embutida.** O endpoint local depende do túnel/gateway para uma
+   fronteira remota segura.
+3. **KiCad 10 schematic live IPC incompleto para este caso.** Materialização por
+   `.kicad_sch` + CLI continua sendo o caminho confiável.
+4. **PCB ainda é menos semântico.** Há operações legadas por coordenadas atrás do
+   registry; a evolução futura deve aplicar ao PCB o mesmo padrão do Circuit IR.
+5. **Reviewer multimodal é probabilístico.** Gates determinísticos continuam sendo a
+   autoridade.
+6. **Fabricação exige revisão humana.** ERC/DRC e IA não substituem análise elétrica,
+   térmica, mecânica, EMC, segurança ou conformidade.
+
+---
+
+## 14. Próximos passos
+
+Prioridade recomendada:
+
+1. benchmark real ponta a ponta de circuitos representativos;
+2. melhorar blocos funcionais e constraints semânticos;
+3. evoluir o PCB para `Placement/Routing IR` de nível mais alto;
+4. adotar live schematic IPC do KiCad 11 quando a API estiver estável;
+5. tornar docs/tool inventory parcialmente gerados pelo registry;
+6. se houver necessidade de serviço compartilhado, introduzir autenticação e uma
+   `Session` isolada por identidade/conexão antes de permitir bind de rede.
+
+---
+
+## 15. Decisões-chave
+
+- **Python + MCP SDK/FastMCP v1.x** no momento; dependência explicitamente limitada a
+  `<2` para impedir migração quebradora silenciosa.
+- **Dois transports** com um mesmo servidor: stdio e Streamable HTTP.
+- **Streamable HTTP loopback-only**; exposição remota pertence a tunnel/gateway.
+- **Circuit IR** como fonte de verdade elétrica.
+- **KiCad como motor CAD/verificação**, não como modelo mental do agente.
+- **Geometria derivada e reversível**.
+- **Tools semânticas no caminho principal; primitives cruas escondidas**.
+- **ERC/DRC e CI real como gates**, não marketing.
