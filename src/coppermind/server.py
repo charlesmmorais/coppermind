@@ -157,11 +157,17 @@ def _bind_tool(fn: Any, session: Session) -> Any:
     return wrapper
 
 
-def build_server() -> Any:
-    """Create and configure the FastMCP server."""
+def build_server(options: ServerOptions | None = None) -> Any:
+    """Create a FastMCP v1 server with transport settings fixed at construction."""
     from mcp.server.fastmcp import FastMCP
 
-    mcp = FastMCP("coppermind")
+    runtime = options or ServerOptions()
+    mcp = FastMCP(
+        "coppermind",
+        host=runtime.host,
+        port=runtime.port,
+        streamable_http_path=runtime.path,
+    )
     session = Session()
     logger.info("Backend: %s", session.backend.name)
 
@@ -183,30 +189,27 @@ def build_server() -> Any:
 def run_server(options: ServerOptions, server: Any | None = None) -> None:
     """Run a configured MCP server, enforcing safe HTTP defaults."""
 
-    mcp = server or build_server()
-    if options.transport == "stdio":
-        logger.info("MCP transport: stdio")
-        mcp.run(transport="stdio")
-        return
-
-    if not _is_loopback_host(options.host):
+    if options.transport == "streamable-http" and not _is_loopback_host(options.host):
         raise ValueError(
             "Coppermind Streamable HTTP is loopback-only. Bind to 127.0.0.1, "
             "localhost or ::1 and place a trusted authenticated MCP tunnel/proxy "
             "in front of it when a remote client must connect."
         )
 
+    mcp = server or build_server(options)
+    if options.transport == "stdio":
+        logger.info("MCP transport: stdio")
+        mcp.run(transport="stdio")
+        return
+
     logger.info("MCP transport: Streamable HTTP at %s", options.endpoint)
     logger.warning(
         "Streamable HTTP shares one Coppermind design session per process; "
         "treat this endpoint as a single-user service."
     )
-    mcp.run(
-        transport="streamable-http",
-        host=options.host,
-        port=options.port,
-        streamable_http_path=options.path,
-    )
+    # FastMCP v1 takes host/port/path at construction time.  Keeping those
+    # settings out of run() is what makes this compatible with mcp>=1.30,<2.
+    mcp.run(transport="streamable-http")
 
 
 def main(argv: Sequence[str] | None = None) -> None:
