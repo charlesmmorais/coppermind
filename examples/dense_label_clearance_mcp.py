@@ -7,17 +7,22 @@ branch that tends to exercise orthogonal routing near labels.
 
 Because this is intentionally a visual stress test, ``design_preview`` may mark
 the layout as visually blocking even when semantic/ERC validation is clean.
-In that case the example skips ``design_commit`` and still attempts the routed
-``schematic_export_composed`` tool. That export has its own semantic/ERC gate
-and will refuse electrically invalid output by default.
+The normal export remains guarded by semantic/ERC validation. If that gate
+blocks, this example prints a concise blocker summary and performs a second,
+explicit diagnostic-only export with ``allow_invalid=True`` so the generated
+geometry can still be inspected in KiCad without mistaking it for valid output.
 
 Run from the repository root:
 
     python -m examples.dense_label_clearance_mcp
 
-The generated KiCad schematic is written to:
+Normal output:
 
     dense_label_clearance.kicad_sch
+
+Diagnostic-only output when ERC blocks:
+
+    dense_label_clearance_DIAGNOSTIC.kicad_sch
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 URL = "http://127.0.0.1:8765/mcp"
 OUTPUT = Path.cwd() / "dense_label_clearance.kicad_sch"
+DIAGNOSTIC_OUTPUT = Path.cwd() / "dense_label_clearance_DIAGNOSTIC.kicad_sch"
 
 
 async def call(session: ClientSession, name: str, arguments: dict[str, Any] | None = None):
@@ -70,6 +76,52 @@ def _visual_summary(preview: dict[str, Any]) -> None:
                 print(" -", finding)
 
 
+def _validation_summary(exported: dict[str, Any]) -> None:
+    pipeline = exported.get("pipeline")
+    if not isinstance(pipeline, dict):
+        return
+
+    print("\n== ELECTRICAL/ERC BLOCKERS ==")
+    found = False
+
+    semantic = pipeline.get("semantic_violations")
+    if isinstance(semantic, list):
+        for item in semantic:
+            if not isinstance(item, dict):
+                continue
+            severity = str(item.get("severity", "warning")).lower()
+            if severity not in {"error", "fatal"}:
+                continue
+            found = True
+            print(
+                " - semantic:",
+                item.get("type", "UNKNOWN"),
+                "-",
+                item.get("description", item),
+            )
+
+    kicad = pipeline.get("kicad")
+    if isinstance(kicad, dict):
+        error = kicad.get("error")
+        if error and kicad.get("blocking"):
+            found = True
+            print(" - kicad-cli:", error)
+        violations = kicad.get("violations")
+        if isinstance(violations, list):
+            for item in violations:
+                if not isinstance(item, dict):
+                    continue
+                severity = str(item.get("severity", "warning")).lower()
+                if severity not in {"error", "fatal"}:
+                    continue
+                found = True
+                print(" - KiCad ERC:", item.get("description", item))
+
+    if not found:
+        print(" - blocking=true, but no normalized error/fatal item was found")
+        print(" - inspect the pipeline JSON above for the raw KiCad result")
+
+
 async def main() -> None:
     async with streamable_http_client(URL) as (read, write, _):
         async with ClientSession(read, write) as session:
@@ -106,15 +158,11 @@ async def main() -> None:
             for net in ("VIN", "VOUT", "FB", "SENSE", "GND"):
                 await call(session, "create_net", {"name": net})
 
-            # VIN source/input and a long cross-coupling branch toward SENSE.
             await call(
                 session,
                 "connect_pins",
                 {"net": "VIN", "pins": ["J1.1", "R1.1", "R9.1", "#FLG01.1"]},
             )
-
-            # Main output node. R2/R3 form parallel loads and R4/R7 start two
-            # secondary branches, making this deliberately denser than a divider.
             await call(
                 session,
                 "connect_pins",
@@ -123,22 +171,16 @@ async def main() -> None:
                     "pins": ["R1.2", "J1.2", "R2.1", "R3.1", "R4.1", "R7.1"],
                 },
             )
-
-            # Feedback node with two parallel return resistors.
             await call(
                 session,
                 "connect_pins",
                 {"net": "FB", "pins": ["R4.2", "R5.1", "R6.1"]},
             )
-
-            # Sense node receives both a local branch from VOUT and the remote
-            # VIN cross-coupling resistor R9, increasing routing pressure.
             await call(
                 session,
                 "connect_pins",
                 {"net": "SENSE", "pins": ["R7.2", "R8.1", "R9.2", "J1.3"]},
             )
-
             await call(
                 session,
                 "connect_pins",
@@ -173,7 +215,7 @@ async def main() -> None:
             else:
                 committed = await call(session, "design_commit")
                 if isinstance(committed, dict) and not committed.get("committed"):
-                    raise RuntimeError("design_commit was blocked; inspect the pipeline above")
+                    print("\nNOTE: design_commit was blocked; continuing to guarded export.")
 
             exported = await call(
                 session,
@@ -183,16 +225,40 @@ async def main() -> None:
                     "arguments": {"path": str(OUTPUT)},
                 },
             )
+
             if isinstance(exported, dict) and not exported.get("ok", True):
-                reason = exported.get("reason", "schematic export failed")
-                raise RuntimeError(f"schematic export failed: {reason}")
+                _validation_summary(exported)
+                composition = exported.get("composition")
+                composition_ok = isinstance(composition, dict) and composition.get("ok")
+                if not composition_ok:
+                    raise RuntimeError(
+                        "schematic composition is unresolved; diagnostic export is unsafe"
+                    )
+
+                print(
+                    "\nNormal export correctly refused electrically invalid output. "
+                    "Creating an explicitly marked DIAGNOSTIC file only for visual "
+                    "inspection of label clearance."
+                )
+                diagnostic = await call(
+                    session,
+                    "execute_tool",
+                    {
+                        "name": "schematic_export_composed",
+                        "arguments": {
+                            "path": str(DIAGNOSTIC_OUTPUT),
+                            "allow_invalid": True,
+                        },
+                    },
+                )
+                if isinstance(diagnostic, dict) and diagnostic.get("ok"):
+                    print(f"\nDiagnostic generated: {DIAGNOSTIC_OUTPUT}")
+                    print("WARNING: this file did not pass the electrical/ERC gate.")
+                    return
+                raise RuntimeError("diagnostic schematic export also failed")
 
             print(f"\nGenerated: {OUTPUT}")
-            if preview_blocks:
-                print(
-                    "Electrical/ERC export gate passed; inspect the generated KiCad "
-                    "file specifically for label clearance and visual collisions."
-                )
+            print("Electrical/ERC export gate passed.")
 
 
 if __name__ == "__main__":
