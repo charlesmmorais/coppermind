@@ -1,6 +1,12 @@
 # Multimodal Visual Reviewer
 
-CopperMind's deterministic Visual Reviewer remains enabled without any external AI service. The multimodal layer is optional and reviews the **real PDF exported by KiCad** together with a bounded Circuit IR context.
+Coppermind's deterministic Visual Reviewer remains enabled without any external AI
+service. The multimodal layer is optional and reviews the **real PDF exported by
+KiCad** together with a bounded Circuit IR context.
+
+This feature is **transport-independent**: it behaves the same whether Coppermind is
+connected to the MCP client through `stdio` or Streamable HTTP. Transport setup is
+documented in [TRANSPORTS.md](TRANSPORTS.md) / [TRANSPORTES.md](TRANSPORTES.md).
 
 ## Pipeline
 
@@ -22,9 +28,16 @@ Structured visual findings
 ERC / preview / commit gate
 ```
 
-The multimodal model never receives MCP tools, Python execution, shell access, file-system access, or a capability to change the Circuit IR. It can only return structured visual findings. The allowed suggestions are geometric: grouping/moving symbols, labels and visual blocks without changing electrical connectivity.
+The multimodal model never receives MCP tools, Python execution, shell access,
+file-system access, or a capability to change the Circuit IR. It can only return
+structured visual findings. Allowed suggestions are geometric: grouping/moving
+symbols, labels and visual blocks without changing electrical connectivity.
 
-## OpenAI configuration
+Phase 5 may translate recognized findings into the typed, bounded Layout Action IR,
+but those actions still pass through the safety gates described in
+[VISUAL_AUTOFIX.md](VISUAL_AUTOFIX.md).
+
+## OpenAI-compatible configuration
 
 ```bash
 export COPPERMIND_VISUAL_PROVIDER=openai
@@ -41,27 +54,29 @@ export COPPERMIND_OPENAI_RESPONSES_URL="https://api.openai.com/v1/responses"
 # Request timeout, bounded internally to 5..180 seconds.
 export COPPERMIND_VISUAL_AI_TIMEOUT="60"
 
-# Off by default. When enabled, a high-confidence AI error can block commit.
+# Off by default. A high-confidence AI error may participate in commit blocking.
 export COPPERMIND_VISUAL_AI_GATE="1"
 
-# Off by default. Fail closed when the configured multimodal reviewer is unavailable.
+# Off by default. Fail closed when the configured reviewer is unavailable.
 export COPPERMIND_VISUAL_AI_REQUIRED="1"
 ```
 
-With no `COPPERMIND_VISUAL_PROVIDER`, or with it set to `off`, the system does not make an external model request.
+With no `COPPERMIND_VISUAL_PROVIDER`, or with it set to `off`, the system makes no
+external multimodal request.
 
 ## Safety model
 
-The provider receives only:
+The provider receives only a bounded review payload:
 
 - KiCad-rendered schematic PDF;
 - component reference, symbol ID and value;
 - schematic X/Y positions;
 - net names and node references;
 - bounded Circuit IR constraints;
-- visual counts.
+- visual counts/metrics.
 
-The provider is instructed to review readability and organization only. Responses are normalized before entering the pipeline:
+The provider is instructed to review readability and organization only. Responses are
+normalized before entering the pipeline:
 
 - unknown component references are discarded;
 - severity is restricted to `info`, `warning` or `error`;
@@ -72,9 +87,12 @@ The provider is instructed to review readability and organization only. Response
 - AI findings are advisory unless `COPPERMIND_VISUAL_AI_GATE=1`;
 - external failure is non-blocking unless `COPPERMIND_VISUAL_AI_REQUIRED=1`.
 
+The deterministic reviewer and KiCad ERC remain independent of the external model.
+The external reviewer cannot make an electrically invalid candidate acceptable.
+
 ## Output
 
-The normal `visual_review.review` object gains:
+The normal `visual_review.review` object may gain:
 
 ```json
 {
@@ -102,8 +120,16 @@ The normal `visual_review.review` object gains:
 }
 ```
 
-The deterministic score is retained for auditability. The final score subtracts only normalized, capped multimodal penalties.
+The deterministic score is retained for auditability. The final score subtracts only
+normalized, capped multimodal penalties.
 
 ## Data boundary
 
-When an external provider is enabled, the KiCad-rendered PDF and the bounded context described above leave the local process and are sent to that provider. Do not enable an external provider for sensitive designs unless that data transfer is acceptable under the applicable security and privacy policy.
+When an external provider is enabled, the KiCad-rendered PDF and the bounded context
+described above leave the local process and are sent to that provider. Do not enable
+an external provider for sensitive designs unless that transfer is acceptable under
+the applicable security, privacy and contractual policy.
+
+The MCP transport does not change this boundary: using Streamable HTTP does not by
+itself send the schematic PDF to the multimodal provider; only enabling
+`COPPERMIND_VISUAL_PROVIDER` does.
