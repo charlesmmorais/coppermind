@@ -1,10 +1,8 @@
-"""Visual review loop for composed KiCad schematics.
+"""Visual review and geometry-only optimization for composed KiCad schematics.
 
-Phase 4 keeps electrical intent in Circuit IR and limits automatic changes to
-geometry. The reviewer combines deterministic layout metrics with a real KiCad
-SVG export when ``kicad-cli`` is available. A future multimodal provider can be
-plugged into the same report without exposing arbitrary code execution to the
-agent.
+Electrical intent always remains in Circuit IR.  This module may score and move
+symbols, then rebuild wires/labels/junctions, but it never creates components,
+nets, pins, PWR_FLAGs or other semantic electrical changes.
 """
 
 from __future__ import annotations
@@ -19,7 +17,7 @@ from typing import Any, Protocol
 
 from coppermind.circuit import Circuit, ElectricalType
 from coppermind.libraries import SymbolResolver
-from coppermind.schematic.composer import compose_schematic, symbol_pin_geometry
+from coppermind.schematic.composer import symbol_pin_geometry
 from coppermind.schematic.erc import evaluate_schematic, run_kicad_erc
 from coppermind.schematic.models import Junction, NetLabel, Schematic, SchSymbol, Wire
 from coppermind.serialize.kicad_sch import schematic_to_kicad_sch
@@ -48,7 +46,7 @@ class VisualFinding:
 
 
 class VisualReviewProvider(Protocol):
-    """Optional hook for a multimodal/VLM reviewer over KiCad-rendered SVG pages."""
+    """Optional multimodal reviewer over SVG pages produced by KiCad."""
 
     def review(self, svg_pages: list[str], context: dict[str, Any]) -> list[VisualFinding]: ...
 
@@ -72,8 +70,8 @@ def _symbol_bounds(schematic: Schematic, symbol: SchSymbol) -> tuple[float, floa
     if not points:
         points = [(symbol.x - 5.08, symbol.y - 5.08), (symbol.x + 5.08, symbol.y + 5.08)]
     margin = 3.81
-    xs = [p[0] for p in points]
-    ys = [p[1] for p in points]
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
     return min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin
 
 
@@ -87,14 +85,10 @@ def _box_gap(a: tuple[float, float, float, float], b: tuple[float, float, float,
     return math.hypot(dx, dy)
 
 
-def _wire_length(wire: Wire) -> float:
-    return math.hypot(wire.x2 - wire.x1, wire.y2 - wire.y1)
-
-
 def _wire_crossings(schematic: Schematic) -> list[tuple[int, int]]:
-    """Find interior orthogonal crossings without a junction marker."""
-    junctions = {(_snap(j.x), _snap(j.y)) for j in schematic.junctions}
-    crossings: list[tuple[int, int]] = []
+    """Return interior orthogonal crossings that have no explicit junction."""
+    junctions = {(_snap(item.x), _snap(item.y)) for item in schematic.junctions}
+    result: list[tuple[int, int]] = []
     for i, left in enumerate(schematic.wires):
         left_h = math.isclose(left.y1, left.y2)
         left_v = math.isclose(left.x1, left.x2)
@@ -107,15 +101,12 @@ def _wire_crossings(schematic: Schematic) -> list[tuple[int, int]]:
                 continue
             horizontal = left if left_h else right
             vertical = right if left_h else left
-            px = vertical.x1
-            py = horizontal.y1
+            px, py = vertical.x1, horizontal.y1
             hx0, hx1 = sorted((horizontal.x1, horizontal.x2))
             vy0, vy1 = sorted((vertical.y1, vertical.y2))
-            if not (hx0 < px < hx1 and vy0 < py < vy1):
-                continue
-            if (_snap(px), _snap(py)) not in junctions:
-                crossings.append((i, j))
-    return crossings
+            if hx0 < px < hx1 and vy0 < py < vy1 and (_snap(px), _snap(py)) not in junctions:
+                result.append((i, j))
+    return result
 
 
 def _flow_reversals(circuit: Circuit | None, schematic: Schematic) -> list[tuple[str, str, str]]:
@@ -124,24 +115,24 @@ def _flow_reversals(circuit: Circuit | None, schematic: Schematic) -> list[tuple
     x_by_ref = {symbol.reference: symbol.x for symbol in schematic.symbols}
     source_types = {ElectricalType.OUTPUT, ElectricalType.POWER_OUTPUT, ElectricalType.OPEN_COLLECTOR}
     sink_types = {ElectricalType.INPUT, ElectricalType.POWER_INPUT}
-    reversals: list[tuple[str, str, str]] = []
+    result: list[tuple[str, str, str]] = []
     for net in circuit.nets.values():
-        sources = []
-        sinks = []
+        sources: list[str] = []
+        sinks: list[str] = []
         for node in net.nodes:
             component = circuit.components.get(node.component)
             if component is None or node.pin not in component.pins:
                 continue
-            kind = component.pins[node.pin].electrical_type
-            if kind in source_types:
+            electrical_type = component.pins[node.pin].electrical_type
+            if electrical_type in source_types:
                 sources.append(node.component)
-            elif kind in sink_types:
+            elif electrical_type in sink_types:
                 sinks.append(node.component)
         for source in sources:
             for sink in sinks:
                 if source in x_by_ref and sink in x_by_ref and x_by_ref[source] > x_by_ref[sink]:
-                    reversals.append((net.name, source, sink))
-    return reversals
+                    result.append((net.name, source, sink))
+    return result
 
 
 def render_schematic_svg(
@@ -186,15 +177,16 @@ def render_schematic_svg(
                 "error": (proc.stderr or proc.stdout or f"kicad-cli exited {proc.returncode}").strip(),
                 "returncode": proc.returncode,
             }
-        pages = []
-        svg_pages: list[str] = []
+
+        pages: list[dict[str, Any]] = []
+        raw_pages: list[str] = []
         for path in sorted(out_dir.glob("*.svg")):
             text = path.read_text(encoding="utf-8")
-            svg_pages.append(text)
-            page: dict[str, Any] = {"name": path.name, "bytes": len(text.encode("utf-8"))}
+            raw_pages.append(text)
+            item: dict[str, Any] = {"name": path.name, "bytes": len(text.encode("utf-8"))}
             if include_svg:
-                page["svg"] = text
-            pages.append(page)
+                item["svg"] = text
+            pages.append(item)
         if not pages:
             return {
                 "available": True,
@@ -208,7 +200,7 @@ def render_schematic_svg(
             "page_count": len(pages),
             "returncode": proc.returncode,
             "stderr": proc.stderr.strip(),
-            "_svg_pages": svg_pages,
+            "_raw_pages": raw_pages,
         }
 
 
@@ -220,9 +212,9 @@ def review_schematic_visual(
     include_svg: bool = False,
     provider: VisualReviewProvider | None = None,
 ) -> dict[str, Any]:
-    """Score visual readability without changing electrical intent."""
+    """Score schematic readability without changing the design."""
     findings: list[VisualFinding] = []
-    bounds = {symbol.reference: _symbol_bounds(schematic, symbol) for symbol in schematic.symbols}
+    bounds = {item.reference: _symbol_bounds(schematic, item) for item in schematic.symbols}
     refs = sorted(bounds)
     overlap_count = 0
     near_count = 0
@@ -232,58 +224,58 @@ def review_schematic_visual(
                 overlap_count += 1
                 findings.append(
                     VisualFinding(
-                        code="SYMBOL_OVERLAP",
-                        severity="error",
-                        message=f"{left} overlaps {right}",
-                        penalty=25.0,
-                        refs=(left, right),
+                        "SYMBOL_OVERLAP",
+                        "error",
+                        f"{left} overlaps {right}",
+                        25.0,
+                        (left, right),
                     )
                 )
             elif _box_gap(bounds[left], bounds[right]) < 5.08:
                 near_count += 1
                 findings.append(
                     VisualFinding(
-                        code="SYMBOL_SPACING",
-                        severity="warning",
-                        message=f"{left} is too close to {right}",
-                        penalty=4.0,
-                        refs=(left, right),
+                        "SYMBOL_SPACING",
+                        "warning",
+                        f"{left} is too close to {right}",
+                        4.0,
+                        (left, right),
                     )
                 )
 
     crossings = _wire_crossings(schematic)
-    for left, right in crossings:
-        findings.append(
-            VisualFinding(
-                code="WIRE_CROSSING",
-                severity="warning",
-                message=f"wire {left} crosses wire {right} without a junction",
-                penalty=8.0,
-            )
+    findings.extend(
+        VisualFinding(
+            "WIRE_CROSSING",
+            "warning",
+            f"wire {left} crosses wire {right} without a junction",
+            8.0,
         )
+        for left, right in crossings
+    )
 
     reversals = _flow_reversals(circuit, schematic)
-    for net, source, sink in reversals:
-        findings.append(
-            VisualFinding(
-                code="FLOW_REVERSAL",
-                severity="warning",
-                message=f"{net}: source {source} is to the right of sink {sink}",
-                penalty=5.0,
-                refs=(source, sink),
-            )
+    findings.extend(
+        VisualFinding(
+            "FLOW_REVERSAL",
+            "warning",
+            f"{net}: source {source} is to the right of sink {sink}",
+            5.0,
+            (source, sink),
         )
+        for net, source, sink in reversals
+    )
 
-    lengths = [_wire_length(wire) for wire in schematic.wires]
+    lengths = [math.hypot(wire.x2 - wire.x1, wire.y2 - wire.y1) for wire in schematic.wires]
     total_wire = sum(lengths)
     max_wire = max(lengths, default=0.0)
     if max_wire > 120.0:
         findings.append(
             VisualFinding(
-                code="LONG_WIRE",
-                severity="info",
-                message=f"longest wire segment is {max_wire:.1f} mm",
-                penalty=min(10.0, (max_wire - 120.0) / 20.0),
+                "LONG_WIRE",
+                "info",
+                f"longest wire segment is {max_wire:.1f} mm",
+                min(10.0, (max_wire - 120.0) / 20.0),
             )
         )
 
@@ -292,18 +284,17 @@ def review_schematic_visual(
         min_y = min(box[1] for box in bounds.values())
         max_x = max(box[2] for box in bounds.values())
         max_y = max(box[3] for box in bounds.values())
-        width = max_x - min_x
-        height = max_y - min_y
+        width, height = max_x - min_x, max_y - min_y
     else:
         width = height = 0.0
     aspect = width / height if height > 0 else 0.0
     if aspect > 6.0:
         findings.append(
             VisualFinding(
-                code="EXTREME_ASPECT_RATIO",
-                severity="info",
-                message=f"schematic layout is very wide ({aspect:.1f}:1)",
-                penalty=4.0,
+                "EXTREME_ASPECT_RATIO",
+                "info",
+                f"schematic layout is very wide ({aspect:.1f}:1)",
+                4.0,
             )
         )
 
@@ -312,32 +303,41 @@ def review_schematic_visual(
         if run_render
         else {"available": False, "pages": [], "error": "disabled"}
     )
-    svg_pages = list(render.pop("_svg_pages", []))
+    raw_pages = list(render.pop("_raw_pages", []))
     if render.get("available") and render.get("error"):
         findings.append(
-            VisualFinding(
-                code="SVG_RENDER_FAILED",
-                severity="error",
-                message=str(render["error"]),
-                penalty=25.0,
+            VisualFinding("SVG_RENDER_FAILED", "error", str(render["error"]), 25.0)
+        )
+
+    if provider is not None and raw_pages:
+        findings.extend(
+            provider.review(
+                raw_pages,
+                {
+                    "symbols": len(schematic.symbols),
+                    "wires": len(schematic.wires),
+                    "labels": len(schematic.labels),
+                    "width_mm": round(width, 2),
+                    "height_mm": round(height, 2),
+                },
             )
         )
 
-    if provider is not None and svg_pages:
-        context = {
-            "symbols": len(schematic.symbols),
-            "wires": len(schematic.wires),
-            "labels": len(schematic.labels),
-            "width_mm": round(width, 2),
-            "height_mm": round(height, 2),
-        }
-        findings.extend(provider.review(svg_pages, context))
-
     score = max(0.0, 100.0 - sum(item.penalty for item in findings))
-    blocking = score < _BLOCKING_SCORE or any(
-        item.severity == "error" and item.code == "SVG_RENDER_FAILED" for item in findings
+    grade = (
+        "A"
+        if score >= 90
+        else "B"
+        if score >= 80
+        else "C"
+        if score >= 70
+        else "D"
+        if score >= 60
+        else "F"
     )
-    grade = "A" if score >= 90 else "B" if score >= 80 else "C" if score >= 70 else "D" if score >= 60 else "F"
+    blocking = score < _BLOCKING_SCORE or any(
+        item.code == "SVG_RENDER_FAILED" and item.severity == "error" for item in findings
+    )
     return {
         "score": round(score, 1),
         "grade": grade,
@@ -376,26 +376,33 @@ def _pin_anchor(schematic: Schematic, reference: str, pin_number: str) -> tuple[
     return _snap(symbol.x + dx), _snap(symbol.y + dy)
 
 
-def _append_wire(target: list[Wire], seen: set[tuple[tuple[float, float], tuple[float, float]]], a: tuple[float, float], b: tuple[float, float]) -> None:
-    a = (_snap(a[0]), _snap(a[1]))
-    b = (_snap(b[0]), _snap(b[1]))
+def _append_wire(
+    target: list[Wire],
+    seen: set[tuple[tuple[float, float], tuple[float, float]]],
+    a: tuple[float, float],
+    b: tuple[float, float],
+) -> None:
+    a, b = (_snap(a[0]), _snap(a[1])), (_snap(b[0]), _snap(b[1]))
     if a == b:
         return
-    key = tuple(sorted((a, b)))
-    typed_key: tuple[tuple[float, float], tuple[float, float]] = (key[0], key[1])
-    if typed_key in seen:
+    ordered = sorted((a, b))
+    key = (ordered[0], ordered[1])
+    if key in seen:
         return
-    seen.add(typed_key)
+    seen.add(key)
     target.append(Wire(x1=a[0], y1=a[1], x2=b[0], y2=b[1]))
 
 
-def _route_net(name: str, endpoints: list[tuple[float, float]]) -> tuple[list[Wire], NetLabel, list[Junction]]:
+def _route_net(
+    name: str, endpoints: list[tuple[float, float]]
+) -> tuple[list[Wire], NetLabel, list[Junction]]:
     points = sorted(set((_snap(x), _snap(y)) for x, y in endpoints))
     if not points:
         raise ValueError(f"net '{name}' has no drawable endpoints")
     if len(points) == 1:
         x, y = points[0]
         return [], NetLabel(text=name, x=x, y=y), []
+
     xs = sorted(x for x, _ in points)
     trunk_x = _snap(xs[len(xs) // 2])
     wires: list[Wire] = []
@@ -405,12 +412,12 @@ def _route_net(name: str, endpoints: list[tuple[float, float]]) -> tuple[list[Wi
     min_y = min(y for _, y in points)
     max_y = max(y for _, y in points)
     _append_wire(wires, seen, (trunk_x, min_y), (trunk_x, max_y))
+
     junctions: list[Junction] = []
     if len(points) > 2:
         for y in sorted({y for _, y in points}):
             branches = sum(1 for x, py in points if py == y and x != trunk_x)
-            vertical = min_y < y < max_y
-            if branches + int(vertical) >= 2:
+            if branches + int(min_y < y < max_y) >= 2:
                 junctions.append(Junction(x=trunk_x, y=y))
     return wires, NetLabel(text=name, x=trunk_x, y=min_y), junctions
 
@@ -428,13 +435,12 @@ def _reroute(circuit: Circuit, schematic: Schematic) -> list[str]:
                 unresolved.append(f"{net_name}: cannot locate {node.key()}")
             else:
                 endpoints.append(anchor)
-        if not endpoints:
-            continue
-        wires, label, junctions = _route_net(net_name, endpoints)
-        schematic.wires.extend(wires)
-        schematic.labels.append(label)
-        schematic.junctions.extend(junctions)
-    unique = {(_snap(j.x), _snap(j.y)): j for j in schematic.junctions}
+        if endpoints:
+            wires, label, junctions = _route_net(net_name, endpoints)
+            schematic.wires.extend(wires)
+            schematic.labels.append(label)
+            schematic.junctions.extend(junctions)
+    unique = {(_snap(item.x), _snap(item.y)): item for item in schematic.junctions}
     schematic.junctions = list(unique.values())
     return unresolved
 
@@ -458,51 +464,42 @@ def optimize_visual_layout(
     run_render: bool = True,
     include_svg: bool = False,
 ) -> dict[str, Any]:
-    """Try bounded geometry-only layout variants and keep the highest-scoring one."""
+    """Try bounded geometry-only variants and keep the highest-scoring one."""
     if max_passes < 1:
         raise ValueError("max_passes must be >= 1")
     target_score = max(0.0, min(100.0, target_score))
-    candidates = [(1.0, 1.0), (1.2, 1.2), (1.4, 1.3), (0.9, 1.0)][:max_passes]
+    variants = [(1.0, 1.0), (1.2, 1.2), (1.4, 1.3), (0.9, 1.0)][:max_passes]
     baseline = schematic.model_copy(deep=True)
     attempts: list[dict[str, Any]] = []
-    best: tuple[float, float, Schematic, dict[str, Any]] | None = None
+    best: tuple[float, float, float, Schematic] | None = None
 
-    for scale_x, scale_y in candidates:
+    for scale_x, scale_y in variants:
         candidate = baseline.model_copy(deep=True)
         _scale_layout(candidate, scale_x, scale_y)
         unresolved = _reroute(circuit, candidate)
-        review = review_schematic_visual(
-            candidate,
-            circuit=circuit,
-            resolver=resolver,
-            run_render=False,
-        )
-        if unresolved:
-            review["score"] = 0.0
-            review["blocking"] = True
+        review = review_schematic_visual(candidate, circuit=circuit, resolver=resolver, run_render=False)
+        score = 0.0 if unresolved else float(review["score"])
         attempts.append(
             {
                 "scale_x": scale_x,
                 "scale_y": scale_y,
-                "score": review["score"],
+                "score": score,
                 "unresolved": unresolved,
             }
         )
-        if best is None or float(review["score"]) > best[0]:
-            best = (float(review["score"]), scale_x, candidate, review)
-        if float(review["score"]) >= target_score and not unresolved:
+        if best is None or score > best[0]:
+            best = (score, scale_x, scale_y, candidate)
+        if score >= target_score and not unresolved:
             break
 
     assert best is not None
-    best_score, best_scale_x, best_schematic, _ = best
-    by_ref = {symbol.reference: symbol for symbol in best_schematic.symbols}
+    candidate_score, best_x, best_y, winner = best
+    winner_by_ref = {symbol.reference: symbol for symbol in winner.symbols}
     for symbol in schematic.symbols:
-        selected = by_ref[symbol.reference]
-        symbol.x = selected.x
-        symbol.y = selected.y
-        symbol.rotation = selected.rotation
+        chosen = winner_by_ref[symbol.reference]
+        symbol.x, symbol.y, symbol.rotation = chosen.x, chosen.y, chosen.rotation
     unresolved = _reroute(circuit, schematic)
-    final = review_schematic_visual(
+    final_review = review_schematic_visual(
         schematic,
         circuit=circuit,
         resolver=resolver,
@@ -510,21 +507,19 @@ def optimize_visual_layout(
         include_svg=include_svg,
     )
     if unresolved:
-        final["blocking"] = True
-        final["acceptable"] = False
+        final_review["blocking"] = True
+        final_review["acceptable"] = False
+
     return {
         "target_score": target_score,
-        "target_met": float(final["score"]) >= target_score and not unresolved,
-        "changed": not math.isclose(best_scale_x, 1.0) or not math.isclose(candidates[0][1] if best_scale_x == candidates[0][0] else 1.0, 1.0),
-        "selected_scale": {
-            "x": best_scale_x,
-            "y": next(item[1] for item in candidates if item[0] == best_scale_x),
-        },
-        "candidate_score": best_score,
+        "target_met": float(final_review["score"]) >= target_score and not unresolved,
+        "changed": not math.isclose(best_x, 1.0) or not math.isclose(best_y, 1.0),
+        "selected_scale": {"x": best_x, "y": best_y},
+        "candidate_score": candidate_score,
         "attempts": attempts,
         "unresolved": unresolved,
-        "review": final,
-        "blocking": bool(final["blocking"]),
+        "review": final_review,
+        "blocking": bool(final_review["blocking"]),
     }
 
 
@@ -538,12 +533,7 @@ def evaluate_visual_schematic(
     include_svg: bool = False,
 ) -> dict[str, Any]:
     """Full Phase-4 pipeline: compose -> visual optimize -> SVG -> ERC."""
-    semantic = evaluate_schematic(
-        circuit,
-        schematic,
-        resolver=resolver,
-        run_external=False,
-    )
+    semantic = evaluate_schematic(circuit, schematic, resolver=resolver, run_external=False)
     if semantic["blocking"]:
         semantic["visual_review"] = {
             "target_score": target_score,
@@ -576,5 +566,7 @@ def evaluate_visual_schematic(
     )
     semantic["kicad"] = external
     semantic["visual_review"] = visual
-    semantic["blocking"] = bool(semantic["blocking"] or visual["blocking"] or external.get("blocking"))
+    semantic["blocking"] = bool(
+        semantic["blocking"] or visual["blocking"] or external.get("blocking")
+    )
     return semantic
