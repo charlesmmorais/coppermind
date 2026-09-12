@@ -1,8 +1,13 @@
-"""Resolve real KiCad symbols from installed ``.kicad_sym`` libraries.
+"""Resolve real KiCad symbols from packed or unpacked KiCad libraries.
 
-No synthetic fallback exists here by design. If a requested library/symbol
-cannot be resolved, the caller gets ``SymbolResolutionError`` and must stop or
-ask the user to fix the library configuration.
+Supported sources:
+
+* installed/packed ``Library.kicad_sym`` files;
+* KiCad 10+ source-style ``Library.kicad_symdir/`` directories;
+* project ``sym-lib-table`` mappings.
+
+No synthetic fallback exists by design. Missing libraries or symbols raise
+``SymbolResolutionError``.
 """
 
 from __future__ import annotations
@@ -53,7 +58,6 @@ def _unquote(token: str) -> str:
 
 
 def _parse_sexpr(text: str) -> list[Any]:
-    """Small, dependency-free S-expression parser for KiCad metadata."""
     tokens = _TOKEN_RE.findall(text)
     stack: list[list[Any]] = []
     root: list[Any] | None = None
@@ -126,7 +130,6 @@ def _matching_paren(text: str, start: int) -> int:
 
 
 def _top_level_symbols(text: str) -> dict[str, str]:
-    """Return symbols directly under ``kicad_symbol_lib`` (not sub-symbols)."""
     found: dict[str, str] = {}
     depth = 0
     in_string = False
@@ -201,7 +204,6 @@ def _extends_name(node: list[Any]) -> str | None:
 
 
 def _normalize_definition(block: str, lib_id: str, library: str) -> str:
-    """Rewrite only outer symbol id and extends target for schematic embedding."""
     name_start = block.find('"', len("(symbol"))
     _, after = _quoted_after(block, len("(symbol"))
     normalized = block[:name_start] + f'"{lib_id}"' + block[after:]
@@ -244,7 +246,9 @@ def _default_search_paths() -> list[Path]:
     if sys.platform.startswith("win"):
         program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
         for version in ("12.0", "11.0", "10.0", "9.0", "8.0"):
-            values.append(str(Path(program_files) / "KiCad" / version / "share" / "kicad" / "symbols"))
+            values.append(
+                str(Path(program_files) / "KiCad" / version / "share" / "kicad" / "symbols")
+            )
     elif sys.platform == "darwin":
         values.extend([
             "/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols",
@@ -287,7 +291,7 @@ def _table_libraries(path: Path, project_dir: Path | None) -> dict[str, Path]:
 
 
 class SymbolResolver:
-    """Resolve ``Library:Symbol`` against real KiCad library files."""
+    """Resolve ``Library:Symbol`` against real KiCad library sources."""
 
     def __init__(
         self,
@@ -306,19 +310,31 @@ class SymbolResolver:
             if self.project_dir else {}
         )
 
-    def _library_path(self, library: str) -> Path:
+    def _library_source(self, library: str) -> Path:
         mapped = self._project_libraries.get(library)
-        if mapped and mapped.is_file():
+        if mapped and (mapped.is_file() or mapped.is_dir()):
             return mapped
         for directory in self.search_paths:
-            candidate = directory / f"{library}.kicad_sym"
-            if candidate.is_file():
-                return candidate
+            packed = directory / f"{library}.kicad_sym"
+            if packed.is_file():
+                return packed
+            unpacked = directory / f"{library}.kicad_symdir"
+            if unpacked.is_dir():
+                return unpacked
         searched = ", ".join(str(p) for p in self.search_paths) or "<none>"
         raise SymbolResolutionError(
             f"KiCad symbol library '{library}' was not found. Searched: {searched}. "
             "Set COPPERMIND_KICAD_SYMBOL_DIRS or pass SymbolResolver(search_paths=[...])."
         )
+
+    @staticmethod
+    def _symbol_source(source: Path, name: str) -> Path:
+        if source.is_file():
+            return source
+        candidate = source / f"{name}.kicad_sym"
+        if candidate.is_file():
+            return candidate
+        raise SymbolResolutionError(f"symbol file '{name}.kicad_sym' not found in {source}")
 
     def resolve(self, lib_id: str) -> ResolvedSymbol:
         if lib_id in self._cache:
@@ -328,7 +344,7 @@ class SymbolResolver:
                 f"invalid KiCad symbol id '{lib_id}'; expected 'Library:Symbol'"
             )
         library, name = lib_id.split(":", 1)
-        result = self._resolve(library, name, self._library_path(library), stack=[])
+        result = self._resolve(library, name, self._library_source(library), stack=[])
         self._cache[lib_id] = result
         return result
 
@@ -336,7 +352,7 @@ class SymbolResolver:
         self,
         library: str,
         name: str,
-        path: Path,
+        source: Path,
         stack: list[str],
     ) -> ResolvedSymbol:
         lib_id = f"{library}:{name}"
@@ -344,23 +360,25 @@ class SymbolResolver:
             raise SymbolResolutionError(
                 f"cyclic symbol inheritance: {' -> '.join(stack + [lib_id])}"
             )
-        text = path.read_text(encoding="utf-8")
+
+        symbol_path = self._symbol_source(source, name)
+        text = symbol_path.read_text(encoding="utf-8")
         blocks = _top_level_symbols(text)
         block = blocks.get(name)
         if block is None:
-            raise SymbolResolutionError(f"symbol '{lib_id}' not found in {path}")
+            raise SymbolResolutionError(f"symbol '{lib_id}' not found in {symbol_path}")
         try:
             parsed = _parse_sexpr(block)
         except ValueError as exc:
             raise SymbolResolutionError(
-                f"cannot parse '{lib_id}' from {path}: {exc}"
+                f"cannot parse '{lib_id}' from {symbol_path}: {exc}"
             ) from exc
 
         parent_name = _extends_name(parsed)
         pins = _collect_pins(parsed)
         definitions: list[ResolvedSymbolDefinition] = []
         if parent_name:
-            parent = self._resolve(library, parent_name, path, stack + [lib_id])
+            parent = self._resolve(library, parent_name, source, stack + [lib_id])
             merged: dict[tuple[str, int], Pin] = {
                 (p.number, p.unit): p for p in parent.pins
             }
@@ -383,7 +401,7 @@ class SymbolResolver:
             lib_id=lib_id,
             library=library,
             name=name,
-            source_path=str(path),
+            source_path=str(symbol_path),
             pins=pins,
             definitions=definitions,
             extends=f"{library}:{parent_name}" if parent_name else None,
