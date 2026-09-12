@@ -85,7 +85,7 @@ def route_net_incremental(circuit: Circuit, schematic: Schematic, net_name: str)
     if len(net.nodes) < 2:
         raise ValueError(f"net '{net_name}' needs at least two connected pins")
 
-    # Geometry produced by the global composer predates per-net ownership.  Do
+    # Geometry produced by the global composer predates per-net ownership. Do
     # not mix both modes silently because a partial reroute could leave stale
     # unowned wires behind.
     if any(not wire.net for wire in schematic.wires):
@@ -132,33 +132,49 @@ def route_net_incremental(circuit: Circuit, schematic: Schematic, net_name: str)
     }
 
 
+def _owned_geometry_nets(schematic: Schematic) -> set[str]:
+    return {
+        item.net
+        for item in (*schematic.wires, *schematic.labels, *schematic.junctions)
+        if item.net
+    }
+
+
 def _incremental_semantic_violations(circuit: Circuit, schematic: Schematic) -> list[dict]:
     violations = [
         {"severity": "error", "type": "INVALID_REFERENCE", "description": message}
         for message in circuit.validate_references()
     ]
-    routed = {wire.net for wire in schematic.wires if wire.net}
+    routed = _owned_geometry_nets(schematic)
     for name, net in circuit.nets.items():
         if len(net.nodes) >= 2 and name not in routed:
             violations.append(
                 {
                     "severity": "error",
                     "type": "NET_NOT_INCREMENTALLY_ROUTED",
-                    "description": f"net '{name}' has semantic connections but no incremental wire geometry",
+                    "description": f"net '{name}' has semantic connections but no incremental geometry",
                 }
             )
     return violations
 
 
 def _is_expected_incomplete_erc(item: dict) -> bool:
+    """Return true only for errors expected while a circuit is still being assembled."""
     text = str(item.get("description") or item.get("message") or "").lower()
-    return "not connected" in text or "unconnected" in text
+    return (
+        "not connected" in text
+        or "unconnected" in text
+        or "not driven" in text
+        or "no driver" in text
+    )
 
 
 def _progressive_erc_view(kicad: dict) -> dict:
-    """Keep ERC findings visible but do not block on expected dangling pins."""
+    """Keep ERC findings visible but do not block on expected incomplete-circuit errors."""
     result = dict(kicad)
     violations: list[dict] = []
+    # A tool/process error can be blocking even without a parsed violation and
+    # must never be downgraded by progressive mode.
     blocking = bool(result.get("blocking")) and not bool(result.get("violations"))
     for raw in result.get("violations", []):
         item = dict(raw)
