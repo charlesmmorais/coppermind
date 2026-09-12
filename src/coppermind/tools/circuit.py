@@ -188,6 +188,15 @@ def connect_pins(session: Session, net: str, pins: list[str]) -> dict:
     }
 
 
+def _incremental_geometry_nets(session: Session) -> set[str]:
+    sch = session.require_schematic()
+    return {
+        item.net
+        for item in (*sch.wires, *sch.labels, *sch.junctions)
+        if item.net
+    }
+
+
 def component_place_relative(
     session: Session,
     reference: str,
@@ -195,27 +204,53 @@ def component_place_relative(
     direction: str = "right",
     gap_mm: float = 25.4,
     lock: bool = True,
+    force: bool = False,
 ) -> dict:
-    """Place a component relative to an existing symbol without absolute coordinates."""
+    """Place one component relative to another and reroute only impacted incremental nets."""
     circuit = session.require_circuit()
     if reference not in circuit.components:
         raise KeyError(f"component '{reference}' does not exist")
     if anchor not in circuit.components:
         raise KeyError(f"anchor component '{anchor}' does not exist")
+    component = circuit.components[reference]
+    if component.properties.get("placement_locked") == "true" and not force:
+        raise ValueError(
+            f"component '{reference}' placement is locked; pass force=true to reposition it"
+        )
 
-    placement = place_relative_geometry(
-        session.require_schematic(),
-        reference,
-        anchor,
-        direction=direction,
-        gap_mm=gap_mm,
+    schematic_before = session.require_schematic().model_copy(deep=True)
+    existing_geometry_nets = _incremental_geometry_nets(session)
+    impacted = sorted(
+        name
+        for name, net in circuit.nets.items()
+        if name in existing_geometry_nets
+        and any(node.component == reference for node in net.nodes)
     )
+    try:
+        placement = place_relative_geometry(
+            session.require_schematic(),
+            reference,
+            anchor,
+            direction=direction,
+            gap_mm=gap_mm,
+        )
+        rerouted = [
+            route_net_incremental(circuit, session.require_schematic(), net_name)
+            for net_name in impacted
+        ]
+    except Exception:
+        session.schematic = schematic_before
+        raise
+
     if lock:
-        circuit.components[reference].properties["placement_locked"] = "true"
+        component.properties["placement_locked"] = "true"
+    elif force:
+        component.properties.pop("placement_locked", None)
     return {
         "ok": True,
         **placement,
-        "locked": lock,
+        "locked": component.properties.get("placement_locked") == "true",
+        "rerouted_nets": [item["net"] for item in rerouted],
         "pending_commit": True,
     }
 
@@ -233,16 +268,18 @@ def component_freeze_placement(session: Session, references: list[str] | None = 
 
 
 def connect_incremental(session: Session, net: str, pins: list[str]) -> dict:
-    """Connect pins in Circuit IR and reroute only that changed net."""
+    """Connect pins in Circuit IR and reroute only that changed net atomically."""
     circuit = session.require_circuit()
     if net not in circuit.nets:
         raise KeyError(f"net '{net}' does not exist; call create_net first")
-    before = circuit.nets[net].model_copy(deep=True)
+    net_before = circuit.nets[net].model_copy(deep=True)
+    schematic_before = session.require_schematic().model_copy(deep=True)
     try:
         connected = connect_pins(session, net, pins)
         route = route_net_incremental(circuit, session.require_schematic(), net)
     except Exception:
-        circuit.nets[net] = before
+        circuit.nets[net] = net_before
+        session.schematic = schematic_before
         raise
     return {
         **connected,
@@ -256,7 +293,7 @@ def schematic_checkpoint(
     run_external: bool = True,
     allow_incomplete: bool = False,
 ) -> dict:
-    """Validate and snapshot incremental geometry; optionally tolerate dangling pins."""
+    """Validate and snapshot incremental geometry; optionally tolerate incomplete ERC."""
     validation = validate_incremental_schematic(
         session.require_circuit(),
         session.require_schematic(),
