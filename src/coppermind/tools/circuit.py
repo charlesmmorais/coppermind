@@ -251,13 +251,18 @@ def connect_incremental(session: Session, net: str, pins: list[str]) -> dict:
     }
 
 
-def schematic_checkpoint(session: Session, run_external: bool = True) -> dict:
-    """Validate the current incremental drawing and snapshot it when non-blocking."""
+def schematic_checkpoint(
+    session: Session,
+    run_external: bool = True,
+    allow_incomplete: bool = False,
+) -> dict:
+    """Validate and snapshot incremental geometry; optionally tolerate dangling pins."""
     validation = validate_incremental_schematic(
         session.require_circuit(),
         session.require_schematic(),
         resolver=session.symbol_resolver,
         run_external=run_external,
+        allow_incomplete=allow_incomplete,
     )
     committed = not bool(validation["blocking"])
     if committed:
