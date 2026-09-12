@@ -1,7 +1,7 @@
 """Deterministic Circuit IR -> drawable KiCad schematic composition.
 
-The LLM owns electrical intent.  This module owns geometry: placement, pin
-anchors, orthogonal wires, labels and junctions.  It deliberately consumes only
+The LLM owns electrical intent. This module owns geometry: placement, pin
+anchors, orthogonal wires, labels and junctions. It deliberately consumes only
 Circuit IR + resolved KiCad symbol definitions, so coordinates never need to be
 part of the agent prompt.
 """
@@ -24,6 +24,7 @@ _HORIZONTAL_LEVEL_GAP = 50.8
 _VERTICAL_ROW_GAP = 50.8
 _POWER_CHAIN_GAP = 25.4
 _POWER_FLAG_OFFSET = 25.4
+_POWER_SYMBOL_OFFSET = 15.24
 
 
 @dataclass(frozen=True)
@@ -128,7 +129,7 @@ def _collect_pin_geometry(node: list[Any], unit: int = 1) -> list[PinGeometry]:
 def symbol_pin_geometry(library: SchLibrarySymbol, unit: int) -> dict[str, PinGeometry]:
     """Return electrical connection anchors for one real KiCad symbol unit.
 
-    KiCad unit 0 contains geometry/pins shared by every displayed unit.  When a
+    KiCad unit 0 contains geometry/pins shared by every displayed unit. When a
     unit-specific pin uses the same number it takes precedence over the common
     definition.
     """
@@ -317,12 +318,11 @@ def _place_power_markers(
     group_refs: set[str],
     primary: set[str],
 ) -> None:
-    """Attach power glyphs to their rail and keep PWR_FLAGs beside the rail.
+    """Place power rail annotations around the functional endpoint.
 
-    Power symbols are annotations/rail declarations, not topology stages.  The
-    old BFS layout treated them as ordinary components, which stretched simple
-    dividers across the page.  Here their electrical pins are placed directly
-    on (or just beside) the functional component pin they annotate.
+    Named rail glyphs sit above/below the attached functional pin with a short
+    wire; PWR_FLAGs sit beside the rail. This keeps semantic connectivity while
+    avoiding deliberate symbol overlap in the visual reviewer.
     """
     for net_name in sorted(circuit.nets):
         net = circuit.nets[net_name]
@@ -350,7 +350,11 @@ def _place_power_markers(
             pin = _connected_pin(circuit, net_name, ref)
             if pin is None:
                 continue
-            target = base if index == 0 else (_coord(base[0] + (index * 15.24)), base[1])
+            vertical = _POWER_SYMBOL_OFFSET if _is_ground_marker(circuit, ref) else -_POWER_SYMBOL_OFFSET
+            target = (
+                _coord(base[0] + index * 15.24),
+                _coord(base[1] + vertical),
+            )
             _place_symbol_pin_at(schematic, ref, pin, target)
 
         for index, ref in enumerate(flags):
@@ -456,7 +460,7 @@ def _layout_generic_group(
 def _layout(circuit: Circuit, schematic: Schematic) -> None:
     """Connectivity-aware deterministic placement.
 
-    Functional signal blocks still flow left-to-right.  A simple two-pin chain
+    Functional signal blocks still flow left-to-right. A simple two-pin chain
     bounded by named power rails is instead laid out top-to-bottom, matching
     conventional schematic reading for dividers, pull-ups and bias chains.
     Power glyphs/PWR_FLAGs are rail annotations and are placed near their
@@ -483,7 +487,7 @@ def _pin_anchor(schematic: Schematic, reference: str, pin_number: str) -> tuple[
         return None
 
     # KiCad library symbol coordinates use Y-up while schematic sheet
-    # coordinates use Y-down.  Preserve the exact pin endpoint: many real
+    # coordinates use Y-down. Preserve the exact pin endpoint: many real
     # symbols intentionally use half-grid offsets such as 1.27/3.81 mm.
     dx, dy = _rotate(pin.x, -pin.y, sym.rotation)
     return _coord(sym.x + dx), _coord(sym.y + dy)
