@@ -4,7 +4,6 @@ from coppermind.backends.memory_backend import MemoryBackend
 from coppermind.session import Session
 from coppermind.tools import CORE_TOOLS, DISCOVERY_TOOLS, REGISTRY
 from coppermind.tools.core import project_create
-from coppermind.tools.routed import ROUTED_TOOLS
 
 
 def _session_with_project():
@@ -15,10 +14,11 @@ def _session_with_project():
 
 def test_routed_tools_are_hidden_from_visible_set():
     visible = {fn.__name__ for fn in CORE_TOOLS + DISCOVERY_TOOLS}
-    routed = {fn.__name__ for fn in ROUTED_TOOLS}
+    routed = set(REGISTRY.names)
     assert visible.isdisjoint(routed), "routed tools must not be always-visible"
-    # but they are discoverable
-    assert set(REGISTRY.names) == routed
+    assert "wire_add" not in routed
+    assert "symbol_add" not in routed
+    assert {"component_place", "net_create", "net_route"} <= routed
 
 
 def test_list_categories_counts():
@@ -40,11 +40,16 @@ def test_get_schema_lists_parameters():
 
 def test_execute_tool_runs_routed_tool():
     s = _session_with_project()
-    # place via core, then move via routed execute_tool
-    from coppermind.tools.core import component_place
-
-    component_place(s, "R1", "R_0805", 10, 10)
-    out = REGISTRY.execute_tool(s, "component_move", {"reference": "R1", "x_mm": 20, "y_mm": 20})
+    REGISTRY.execute_tool(
+        s,
+        "component_place",
+        {"reference": "R1", "footprint": "R_0805", "x_mm": 10, "y_mm": 10},
+    )
+    out = REGISTRY.execute_tool(
+        s,
+        "component_move",
+        {"reference": "R1", "x_mm": 20, "y_mm": 20},
+    )
     assert out["moved"] == "R1"
     listing = REGISTRY.execute_tool(s, "component_list", {})
     assert listing["components"][0]["x"] == 20
