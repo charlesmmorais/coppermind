@@ -24,6 +24,7 @@ def project_create(session: Session, name: str, width_mm: float, height_mm: floa
     session.document = Document(board, session.backend)
     session.schematic = Schematic(name=name)
     session.circuit = Circuit(name=name)
+    session.commit_semantic_state()
     return {
         "ok": True,
         "project": name,
@@ -77,7 +78,7 @@ def net_route(
 
 
 def design_preview(session: Session) -> dict:
-    """Preview pending PCB changes: structured diff, verification report, render."""
+    """Preview pending PCB and semantic Circuit IR changes before commit."""
     doc = session.require_document()
     diff, violations = doc.preview()
     working = doc.working()
@@ -91,26 +92,31 @@ def design_preview(session: Session) -> dict:
         "would_block": any(v.severity >= 30 for v in violations),
         "advice": [v.model_dump() for v in advice],
         "render_svg": render.decode("utf-8") if render else None,
-        "circuit": circuit.model_dump() if circuit is not None else None,
+        "semantic_dirty": session.semantic_dirty(),
+        "circuit": circuit.model_dump(mode="json") if circuit is not None else None,
     }
 
 
 def design_commit(session: Session) -> dict:
-    """Verify and commit pending PCB changes. Blocked by ERROR-level violations."""
+    """Verify and commit PCB plus semantic Circuit IR changes."""
     doc = session.require_document()
     result = doc.commit()
+    if result.committed:
+        session.commit_semantic_state()
     return {
         "committed": result.committed,
         "summary": result.summary(),
+        "semantic_committed": result.committed and not session.semantic_dirty(),
         "violations": [v.model_dump() for v in result.violations],
     }
 
 
 def design_rollback(session: Session) -> dict:
-    """Discard all pending PCB-domain changes."""
+    """Discard pending PCB and semantic Circuit IR changes."""
     doc = session.require_document()
     doc.rollback()
-    return {"ok": True, "rolled_back": True}
+    session.rollback_semantic_state()
+    return {"ok": True, "rolled_back": True, "semantic_dirty": session.semantic_dirty()}
 
 
 CORE_TOOLS = (
