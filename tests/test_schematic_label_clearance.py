@@ -10,6 +10,7 @@ from coppermind.schematic.models import (
 from coppermind.serialize.kicad_sch import (
     _label_layouts,
     _text_box,
+    _wire_intersects_box,
 )
 
 
@@ -69,21 +70,23 @@ def test_label_moves_along_its_net_to_clear_component_fields():
 
 
 def test_label_avoids_unrelated_crossing_wire_without_leaving_its_net():
-    label = NetLabel(text="DATA_OUT", x=25.0, y=20.0)
+    label = NetLabel(text="DATA_OUT", x=20.0, y=20.0)
+    unrelated = Wire(x1=25.0, y1=15.0, x2=25.0, y2=25.0)
     schematic = Schematic(
         name="label_crossing",
         wires=[
             Wire(x1=10.0, y1=20.0, x2=40.0, y2=20.0),
-            Wire(x1=25.0, y1=15.0, x2=25.0, y2=25.0),
+            unrelated,
         ],
         labels=[label],
     )
 
     placement = _label_layouts(schematic, {})[label.uuid]
+    box = _text_box(label.text, placement.x, placement.y, placement.justify)
 
     assert placement.y == 20.0
     assert 10.0 <= placement.x <= 40.0
-    assert placement.x != 25.0
+    assert not _wire_intersects_box(unrelated, box)
 
 
 def test_adjacent_labels_choose_non_overlapping_sides_or_positions():
