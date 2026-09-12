@@ -14,7 +14,7 @@ from coppermind.tools.circuit import (
     find_symbol,
     inspect_component,
 )
-from coppermind.tools.core import project_create
+from coppermind.tools.core import design_commit, design_preview, design_rollback, project_create
 
 
 DEVICE_LIB = r'''(kicad_symbol_lib
@@ -73,11 +73,13 @@ def test_find_add_connect_and_inspect_without_coordinates(tmp_path: Path):
 
     added_r = component_add(session, "R1", "Device:R", value="10k")
     added_c = component_add(session, "C1", "Device:C", value="100nF")
+    assert added_r["pending_commit"] is True
     assert {p["number"] for p in added_r["pins"]} == {"1", "2"}
     assert {p["number"] for p in added_c["pins"]} == {"1", "2"}
 
-    create_net(session, "SENSE")
+    assert create_net(session, "SENSE")["pending_commit"] is True
     connected = connect_pins(session, "SENSE", ["R1.2", "C1.1"])
+    assert connected["pending_commit"] is True
     assert connected["pins"] == ["R1.2", "C1.1"]
 
     inspected = inspect_component(session, "R1")
@@ -89,6 +91,26 @@ def test_find_add_connect_and_inspect_without_coordinates(tmp_path: Path):
     assert [symbol.reference for symbol in sch.symbols] == ["R1", "C1"]
     assert "Device:R" in sch.library_symbols
     assert sch.wires == []
+
+
+def test_semantic_state_participates_in_preview_commit_and_rollback(tmp_path: Path):
+    session = _session(tmp_path)
+    project_create(session, "demo", 100, 80)
+
+    component_add(session, "R1", "Device:R")
+    assert design_preview(session)["semantic_dirty"] is True
+
+    committed = design_commit(session)
+    assert committed["committed"] is True
+    assert committed["semantic_committed"] is True
+    assert design_preview(session)["semantic_dirty"] is False
+
+    component_add(session, "C1", "Device:C")
+    assert set(session.require_circuit().components) == {"R1", "C1"}
+    rolled_back = design_rollback(session)
+    assert rolled_back["semantic_dirty"] is False
+    assert set(session.require_circuit().components) == {"R1"}
+    assert [symbol.reference for symbol in session.require_schematic().symbols] == ["R1"]
 
 
 def test_connect_rejects_pin_already_owned_by_another_net(tmp_path: Path):
