@@ -92,6 +92,7 @@ class Wire(BaseModel):
     y1: float
     x2: float
     y2: float
+    net: str = ""
     uuid: str = Field(default_factory=_uid)
 
 
@@ -100,12 +101,14 @@ class NetLabel(BaseModel):
     x: float = 0.0
     y: float = 0.0
     rotation: float = 0.0
+    net: str = ""
     uuid: str = Field(default_factory=_uid)
 
 
 class Junction(BaseModel):
     x: float = 0.0
     y: float = 0.0
+    net: str = ""
     uuid: str = Field(default_factory=_uid)
 
 
