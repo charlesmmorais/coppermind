@@ -1,10 +1,14 @@
 # Phase 5 — Visual Auto-Fix
 
-Phase 5 turns CopperMind's visual reviewer into a **bounded geometry actuator**.
+Phase 5 turns Coppermind's visual reviewer into a **bounded geometry actuator**.
 Electrical intent remains exclusively in Circuit IR. The auto-fix layer may move
 schematic symbols and regenerate derived wires, labels and junctions; it may not
 add/remove components, edit pins, create/delete nets or otherwise change
 connectivity.
+
+The behavior is independent of MCP transport: `stdio` and Streamable HTTP expose the
+same routed tools. Transport setup and the HTTP security model are documented in
+[TRANSPORTS.md](TRANSPORTS.md) / [TRANSPORTES.md](TRANSPORTES.md).
 
 ## Pipeline
 
@@ -72,8 +76,7 @@ schematic before applying any action.
 - All positions are snapped to the 2.54 mm schematic grid.
 - Hard position constraints are honored (`fixed_position`, `lock_position`,
   `position_lock`, `do_not_move`).
-- Circuit IR is serialized before/after the operation and must be byte/model
-  equivalent.
+- Circuit IR is serialized before/after the operation and must remain model-equivalent.
 - Wires, labels and junctions are regenerated from Circuit IR after a move.
 - Unknown or hallucinated component references are rejected.
 
@@ -103,9 +106,9 @@ Runs the current visual pipeline and translates safe findings into a typed
 
 ### `schematic_visual_apply`
 
-Accepts an explicit list of Layout Action IR dictionaries. It validates the
-plan, applies it on a copy, reruns visual checks and ERC, and only publishes the
-geometry when all acceptance gates pass.
+Accepts an explicit list of Layout Action IR dictionaries. It validates the plan,
+applies it on a copy, reruns visual checks and ERC, and only publishes the geometry
+when all acceptance gates pass.
 
 ### `schematic_visual_autofix`
 
@@ -115,25 +118,32 @@ Runs the bounded autonomous loop:
 review → plan → apply candidate → verify → accept/rollback
 ```
 
-It stops when the target score is reached, no safe plan can be generated, a
-candidate fails a gate, or 3 iterations have been attempted.
+It stops when the target score is reached, no safe plan can be generated, a candidate
+fails a gate, or 3 iterations have been attempted.
 
 ## Multimodal reviewer
 
-The Phase-4 multimodal reviewer remains optional. Phase 5 consumes its
-normalized findings and converts recognized visual issues (for example block
-grouping, density and decoupling proximity) into Layout Action IR. Providers may
-also supply an explicit action object, but it is still normalized and validated
-before execution.
+The Phase-4 multimodal reviewer remains optional. Phase 5 consumes its normalized
+findings and converts recognized visual issues (for example block grouping, density
+and decoupling proximity) into Layout Action IR. Providers may also supply an
+explicit action object, but it is still normalized and validated before execution.
 
-The external model never receives a shell, Python executor or KiCad mutation
-tool.
+The external model never receives a shell, Python executor or direct KiCad mutation
+tool. See [MULTIMODAL_VISUAL_REVIEW.md](MULTIMODAL_VISUAL_REVIEW.md) for the provider
+data boundary.
 
 ## Default design path
 
-`design_preview` and `design_commit` **do not automatically invoke autonomous
-Phase-5 fixes**. They keep using the safer Phase-4 compose/review/ERC gate.
-Higher-autonomy auto-fix must be requested explicitly through the routed tool.
+`design_preview` and `design_commit` **do not automatically invoke autonomous Phase-5
+fixes**. They use the safer compose/review/ERC pipeline. Higher-autonomy auto-fix must
+be requested explicitly through the routed tool.
 
-This separation keeps normal design operations predictable and auditable while
-still allowing an agent to request controlled iterative visual improvement.
+This separation keeps normal design operations predictable and auditable while still
+allowing an agent to request controlled iterative visual improvement.
+
+## Transport and session note
+
+When called through Streamable HTTP, auto-fix still acts on the single Coppermind
+`Session` owned by that server process. Do not point multiple untrusted clients at the
+same process; the HTTP mode is intended for one trusted design context behind a
+local/tunnel boundary.

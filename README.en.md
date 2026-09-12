@@ -2,451 +2,455 @@
 
 # 🔶 Coppermind
 
-### An AI PCB-design copilot for KiCAD — an **IPC-first, transactional, verified** MCP server
+### Electronic-engineering copilot for KiCad — semantic, transactional, verified MCP
 
+[![CI](https://github.com/charlesmmorais/coppermind/actions/workflows/ci.yml/badge.svg)](https://github.com/charlesmmorais/coppermind/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776ab.svg)](https://www.python.org/)
-[![KiCAD 10/11](https://img.shields.io/badge/KiCAD-10%20%7C%2011-green.svg)](https://www.kicad.org/)
-[![Tests](https://img.shields.io/badge/tests-190%20passing-brightgreen.svg)](#-quality-tests--ci)
+[![KiCad 10/11](https://img.shields.io/badge/KiCad-10%20%7C%2011-green.svg)](https://www.kicad.org/)
 [![MCP](https://img.shields.io/badge/protocol-MCP-orange.svg)](https://modelcontextprotocol.io/)
 
-[🇧🇷 Português (main)](README.md) · **🇺🇸 English**
+[🇧🇷 Português](README.md) · **🇺🇸 English**
 
 </div>
 
 ---
 
-> **Describe what you want to build.** Coppermind proposes, **verifies**,
-> **explains**, and only then applies — and **everything is reversible**.
+> **Describe the circuit, not the coordinates.** Coppermind resolves real KiCad
+> symbols, builds a Circuit IR, composes the schematic, runs ERC, reviews visual
+> organization, and only accepts changes after safety gates pass.
 
-Coppermind is an [MCP](https://modelcontextprotocol.io/) server that lets AI
-assistants (like Claude) design PCBs in KiCAD through **natural language**. Unlike
-a thin command translator, it **previews and verifies every change before
-writing** (including native KiCAD DRC/ERC), keeps everything **reversible**, and
-grounds its suggestions in a **citable electrical-engineering knowledge base**.
+**Coppermind** is a Python MCP server for electronic-design workflows in **KiCad**.
+The primary schematic path is semantic: the agent works with
+`Component / Pin / Net / Constraint`, while Coppermind lowers that intent into a
+real `.kicad_sch` using symbols from the user's installed KiCad libraries.
 
-<div align="center">
+The server supports **two MCP transports**:
+
+- **stdio** — a local MCP host launches Coppermind as a subprocess;
+- **Streamable HTTP** — a local `/mcp` endpoint suitable for a trusted MCP
+  tunnel/gateway when the client is outside the machine.
+
+HTTP is intentionally **loopback-only**. Coppermind is not meant to be exposed
+directly to the public Internet: it currently keeps one design session per process
+and does not implement application-level multi-user authentication.
 
 ![Coppermind architecture](docs/architecture.svg)
 
-</div>
-
 ---
 
-## 📑 Table of contents
+## Current status
 
-- [Why Coppermind exists](#-why-coppermind-exists)
-- [What makes it different](#-what-makes-it-different)
-- [Architecture](#-architecture)
-- [The transactional model](#-the-transactional-model)
-- [Installation](#-installation)
-- [MCP client setup](#-mcp-client-setup)
-- [Backends](#-backends)
-- [Tool catalog](#-tool-catalog)
-- [Design intelligence](#-design-intelligence)
-- [Autorouting (Freerouting)](#-autorouting-freerouting)
-- [Suppliers (JLCPCB/LCSC) and datasheets](#-suppliers-jlcpcblcsc-and-datasheets)
-- [Usage examples](#-usage-examples)
-- [Getting the design into KiCAD](#-getting-the-design-into-kicad-recommended-path)
-- [Schematic (Eeschema)](#-schematic-eeschema--mvp)
-- [Quality: tests & CI](#-quality-tests--ci)
-- [Project layout](#-project-layout)
-- [Roadmap / phase status](#-roadmap--phase-status)
-- [Honest limitations](#-honest-limitations)
-- [Contributing](#-contributing)
-- [License, credits & disclaimer](#-license-credits--disclaimer)
+The schematic workflow now implements five semantic phases:
 
----
-
-## 🎯 Why Coppermind exists
-
-The project grew out of a **critical study** of existing KiCAD MCP servers
-(notably `mixelpixx/KiCAD-MCP-Server`). They proved the demand but shared
-recurring weaknesses: contradictory docs, an advertised-but-inert tool "router," a
-fragile TypeScript↔Python bridge, heavy reliance on the SWIG `pcbnew` bindings —
-which **KiCAD 11 removes** — and AI-generated designs **without mandatory
-verification**.
-
-Coppermind fixes each of these by construction and goes further: it turns a
-*command executor* into an **engineering copilot** that reasons about the design,
-verifies continuously, and keeps the human in control.
-
-> 📄 The full analysis and architecture decisions live in
-> [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md).
-
----
-
-## ✨ What makes it different
-
-| Pillar | What it means in practice |
+| Phase | Delivered capability |
 | --- | --- |
-| 🔌 **IPC-first** | Built on KiCAD's Protobuf IPC API via `kicad-python` (kipy) — the path that **survives KiCAD 11**, where SWIG is removed. SWIG is never the foundation. |
-| 🐍 **One language** | Pure Python with the official MCP SDK (FastMCP). No TS↔Python bridge and its failure modes. |
-| 🛡️ **Nothing is written blindly** | Every mutation flows through a transaction: `preview` (diff + render) → `verify` → `commit`/`rollback`, with `undo`/`redo`. |
-| ✅ **Verification on the happy path** | Structural checks block invalid commits; **native KiCAD DRC/ERC joins the same gate**; every finding cites its rule. |
-| 🧪 **KiCAD-independent core** | Domain + verification + transactions run and are **tested without KiCAD**. |
-| 🔎 **Real progressive discovery** | A lean always-visible set; the long tail is discovered on demand. A **context-budget CI test** enforces it — not a slogan. |
-| 🧠 **Design intelligence** | A **versioned, citable** EE knowledge base (IPC-2221 trace width, decoupling per IC…) powers proactive critique and design blocks — every suggestion points back to its rule. |
-| 🤝 **Collaboration & pluggable integrations** | Versioned timeline, explain mode, suppliers (JLCPCB/LCSC), and a Freerouting autorouter — behind interfaces, with offline providers tested without a network. |
-| 💾 **Persistent knowledge & state** | A **data-driven** EE rule base in YAML (`intelligence/ee_rules.yaml`); projects **saved/resumed** (JSON) and **exported to `.kicad_pcb`** for end-to-end headless DRC/render via the BatchBackend. |
+| **1 — Circuit IR + real symbols** | `Component`, `Pin`, `Net`, `Constraint`; `.kicad_sym`/`.kicad_symdir` resolution; no generic two-pin fallback. |
+| **2 — Semantic tools** | `find_symbol`, `component_add`, `create_net`, `connect_pins`, `inspect_component`; the LLM does not draw wires by coordinates. |
+| **3 — Semantic Composer** | Circuit IR → placement → net graph → wires/labels/junctions → `.kicad_sch` → real KiCad ERC. |
+| **4 — Visual Reviewer** | visual score, real KiCad SVG/PDF, deterministic reflow and optional multimodal review. |
+| **5 — Visual Auto-Fix** | typed Layout Action IR, copy-on-write candidates, safety gates, ERC diff and rollback. |
 
----
-
-## 🏗️ Architecture
-
-The system is organized into **layers with sharp boundaries**. The **golden
-rule**: `domain/` and `verification/` **never** import KiCAD — backends are the
-only seam. This lets intelligence and verification be tested without KiCAD and lets
-the backend be swapped (IPC today, IPC-only tomorrow) without touching the logic.
-
-![Architecture](docs/architecture.svg)
-
-| Layer | Folder | Responsibility |
-| --- | --- | --- |
-| Protocol | `server.py` | Tool/resource registration via FastMCP (thin layer) |
-| Tools | `tools/` | `core` · `discovery` · `registry` · `routed` |
-| Orchestration | `transactions/` | begin/preview/commit/rollback, undo/redo, timeline |
-| Domain | `domain/` | board model, diff, operations (no KiCAD) |
-| Verification | `verification/` | structural checks + severity (no KiCAD) |
-| Intelligence | `intelligence/` | EE KB, critique, design blocks, placement |
-| Schematic | `schematic/` | hierarchical sheets + netlist flattening |
-| Variants | `variants.py` | per-component overrides (value/footprint/DNP) |
-| Backends | `backends/` | IPC (kipy) · Batch (kicad-cli) · Memory (dev/CI) |
-| Integrations | `integrations/` | suppliers · datasheets · Freerouting |
-
----
-
-## 🔁 The transactional model
-
-Every change follows the cycle:
-
-```
-begin → (apply to working copy) → preview → verify → commit | rollback
+```text
+ChatGPT / Claude / another MCP client
+              │
+       stdio or Streamable HTTP
+              │
+              ▼
+          Coppermind
+              │
+              ▼
+          Circuit IR
+              │
+              ▼
+      Semantic Composer
+              │
+              ▼
+      real .kicad_sch
+              │
+      ┌───────┴────────┐
+      ▼                ▼
+   KiCad ERC       SVG / PDF
+      │                │
+      └───────┬────────┘
+              ▼
+       Visual Reviewer
+              │
+       Layout Action IR
+              │
+        accept / rollback
 ```
 
-- **preview** returns a **structured diff**, a **render**, the **violations**
-  (structural + native DRC), and design **advice** (cited).
-- **commit** runs the **verification gate**. On an *error*-level violation the
-  commit is **blocked** and the working copy is kept intact for fixing.
-- Every successful commit enters the **timeline** and enables **undo/redo**.
-
-The result: it is **structurally impossible** to write many invalid states unnoticed.
-
 ---
 
-## 📦 Installation
+## Installation
 
-Requirements: **Python 3.11+**, and (for live use) **KiCAD 10+** with the IPC API
-enabled. No Node required.
+### Requirements
+
+- Python **3.11+**;
+- KiCad **10+** for real use;
+- `kicad-cli` on `PATH` for headless ERC/rendering;
+- for live IPC: the `kicad-python` package and KiCad's IPC API enabled.
+
+Coppermind intentionally stays on the **MCP Python SDK 1.x** API while it uses
+`FastMCP`: `mcp>=1.30,<2`. This avoids an accidental upgrade across the SDK v2
+breaking API boundary.
+
+### Linux/macOS
 
 ```bash
 git clone https://github.com/charlesmmorais/coppermind.git
 cd coppermind
-
-# dev environment (runs the whole suite WITHOUT needing KiCAD)
-pip install -e ".[dev]"
-pytest
-
-# real use (MCP server) — add the [ipc] extra for live KiCAD
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
 pip install -e ".[ipc]"
-coppermind          # or: python -m coppermind.server
 ```
 
-Backend selection via environment variable:
+### Windows / PowerShell
+
+```powershell
+git clone https://github.com/charlesmmorais/coppermind.git
+cd coppermind
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e ".[ipc]"
+```
+
+For development:
 
 ```bash
-COPPERMIND_BACKEND=auto    # IPC if KiCAD is reachable, else memory (default)
-COPPERMIND_BACKEND=ipc     # require live KiCAD
-COPPERMIND_BACKEND=memory  # always in-memory (dev/offline)
+pip install -e ".[dev,ipc]"
+pytest
 ```
+
+For live IPC, enable this in KiCad:
+
+**Preferences → Plugins → Enable IPC API Server**
 
 ---
 
-## ⚙️ MCP client setup
+## Running the MCP server
 
-Example for **Claude Desktop** (`claude_desktop_config.json`):
+### Option A — stdio
+
+This is the default and the best fit for local MCP hosts:
+
+```bash
+coppermind
+```
+
+or explicitly:
+
+```bash
+coppermind --transport stdio
+```
+
+### Option B — Streamable HTTP
+
+```bash
+coppermind \
+  --transport streamable-http \
+  --host 127.0.0.1 \
+  --port 8765 \
+  --path /mcp
+```
+
+Endpoint:
+
+```text
+http://127.0.0.1:8765/mcp
+```
+
+Equivalent environment variables:
+
+```bash
+COPPERMIND_TRANSPORT=streamable-http
+COPPERMIND_HTTP_HOST=127.0.0.1
+COPPERMIND_HTTP_PORT=8765
+COPPERMIND_HTTP_PATH=/mcp
+COPPERMIND_BACKEND=auto
+coppermind
+```
+
+> **Security:** the process refuses `0.0.0.0`, LAN IPs, and non-loopback hostnames.
+> For ChatGPT or another remote client, keep Coppermind on `127.0.0.1` and put an
+> **authenticated trusted MCP tunnel/gateway** in front of it. See
+> [`docs/TRANSPORTS.md`](docs/TRANSPORTS.md).
+
+---
+
+## Connecting MCP clients
+
+### Claude Desktop / local clients
+
+Example `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "coppermind": {
       "command": "coppermind",
-      "env": { "COPPERMIND_BACKEND": "auto", "LOG_LEVEL": "info" }
+      "args": ["--transport", "stdio"],
+      "env": {
+        "COPPERMIND_BACKEND": "auto",
+        "LOG_LEVEL": "INFO"
+      }
     }
   }
 }
 ```
 
-In KiCAD, enable the IPC API under **Preferences → Plugins → Enable IPC API Server**.
+If `coppermind` is not on `PATH`, use the virtual environment's absolute executable
+path.
 
----
+### ChatGPT / remote MCP client
 
-## 🧩 Backends
-
-| Backend | Needs | load/apply | render | native DRC |
-| --- | --- | --- | --- | --- |
-| `MemoryBackend` | nothing | yes (in-memory) | SVG | — |
-| `IPCBackend` | running KiCAD (or `headless=True`) | yes (kipy) | KiCAD SVG | via kicad-cli |
-| `BatchBackend` | `kicad-cli` + a `.kicad_pcb` | (future phase) | KiCAD SVG | via kicad-cli |
-
-Auto-detection order is **IPC → memory**. `BatchBackend` is file-specific, for
-headless DRC/render.
-
----
-
-## 🛠️ Tool catalog
-
-**48 tools** total: **7 core** + **5 discovery** always visible, and **29 routed**
-discovered on demand (across 8 categories).
-
-### Always visible — core
-`project_create` · `component_place` · `net_create` · `net_route` ·
-`design_preview` · `design_commit` · `design_rollback`
-
-### Always visible — progressive discovery
-`list_tool_categories` · `get_category_tools` · `search_tools` ·
-`get_tool_schema` · `execute_tool`
-
-### Routed (on demand), by category
-
-| Category | Tools |
-| --- | --- |
-| `component` | `component_move`, `component_edit`, `component_delete`, `component_list` |
-| `net` | `net_list` |
-| `board` | `board_info` |
-| `design` | `design_undo`, `design_redo`, `design_render`, `design_critique`, `design_list_rules`, `design_explain_rule`, `design_add_decoupling`, `design_add_led`, `design_timeline`, `design_explain`, `design_placement_report` |
-| `supplier` | `supplier_search`, `supplier_part`, `supplier_alternatives`, `supplier_cheapest` |
-| `datasheet` | `datasheet_get`, `datasheet_enrich` |
-| `routing` | `route_check`, `route_export_dsn`, `route_autoroute`, `route_import_ses` |
-| `variant` | `variant_preview`, `variant_apply` |
-
-> 💡 **Why this matters:** loading 41 schemas every turn wastes context and
-> degrades model selection. Coppermind keeps the visible set lean and exposes the
-> rest via `search_tools`/`execute_tool` — and a **CI test fails** if anyone blows
-> the budget.
-
----
-
-## 🧠 Design intelligence
-
-What turns an "executor" into a "copilot" (all in `intelligence/`, no KiCAD):
-
-- **Versioned, citable EE knowledge base** (`knowledge.py`): each rule has a stable
-  id, a citation (e.g. **IPC-2221**), and a rationale. A governance test enforces
-  unique ids and that every rule cites a source.
-- **IPC-2221 calculator** (`trace_width.py`): minimum trace width for a current,
-  validated against known tables (1 A ≈ 0.30 mm, 1 oz, 10 °C rise).
-- **Proactive critique** (`critique.py`): power trace width, decoupling per IC,
-  ground present — **advice** that **never blocks** the commit, each citing its
-  rule. Surfaced as `advice` in `design_preview`.
-- **Parametrizable design blocks** (`blocks.py`): decoupling capacitor, LED
-  indicator — each returns a justified `BlockResult`.
+Coppermind now exposes Streamable HTTP, but `127.0.0.1` only exists on your local
+machine. A cloud client needs a trusted bridge:
 
 ```text
-"Add a decoupling capacitor to U1"
-→ design_add_decoupling(U1, C1)  →  the "U1 has no decoupling" advice disappears
+ChatGPT
+   │
+   │ MCP Streamable HTTP
+   ▼
+authenticated MCP tunnel/gateway
+   │
+   ▼
+127.0.0.1:8765/mcp
+   │
+   ▼
+Coppermind → KiCad
 ```
+
+The client/workspace must support **custom MCP servers and write-capable tools** to
+create or modify a schematic. HTTP transport by itself does not grant those
+permissions.
 
 ---
 
-## 🔀 Autorouting (Freerouting)
-
-Full **Specctra DSN → SES → board** workflow, with runtime **Java direct, Docker,
-or Podman** (auto-detected in that order).
-
-![Freerouting flow](docs/freerouting-flow.svg)
-
-👉 **Full step-by-step:** [`docs/AUTORROTEAMENTO.md`](docs/AUTORROTEAMENTO.md)
-(export the DSN from KiCAD, download the jar / use Docker, run `route_autoroute`).
-
-Summary:
-
-```text
-route_check                              # runtime + jar ready?
-# export the DSN in KiCAD: File → Export → Specctra DSN
-route_autoroute  dsn_path=... ses_path=...   # route and import
-design_preview                           # review (diff + DRC + render)
-design_commit                            # write (or design_rollback)
-```
-
-The **SES parser** (S-expression, resolution/unit-aware) and the board apply are
-**pure and tested without Java**; only the engine run is isolated.
-
----
-
-## 🛒 Suppliers (JLCPCB/LCSC) and datasheets
-
-Two JLCPCB modes behind the same `SupplierProvider` interface:
-
-1. **Public, no-credential API** — `JLCPCBProvider` (via JLCSearch), pure parser
-   tested.
-2. **Local catalog** — `LocalLibraryProvider` over the **`jlcparts` SQLite**
-   (a **2.5M+ part** catalog), with search/price/stock/Basic/datasheet —
-   **tested end-to-end** (SQLite is local, no network).
-
-Plus **Basic-fee-aware cost optimization** (`pick_cheapest`): at low quantity the
-Basic part wins (no $3 fee); at high volume the volume amortizes the fee.
-
-**Datasheet enrichment via LCSC** (`integrations/datasheets.py`): resolve datasheet
-URLs by LCSC id or for a BOM via the active provider, with a direct LCSC client
-(pure response parser tested) as fallback.
-
-```text
-supplier_cheapest  query="10k 0603"  qty=100
-datasheet_enrich   bom={ "R1": "C25804", "R2": "C22775" }
-```
-
----
-
-## 💬 Usage examples
-
-All in natural language to the assistant:
-
-```text
-Create a project 'LEDBoard', 50x50mm.
-Place an LED at 10,10 and a 330Ω resistor at 20,10.
-Create net 'LED1' and route from R1 to the LED at 0.3mm.
-Show me the preview and the design advice.
-If it looks good, commit as "first LED".
-```
-
-```text
-Find a cheaper Basic 10k 0603 resistor for 100 units.
-Apply the low-cost variant: R1 = 22k, R2 = DNP.
-Run the autorouter and show me what changed before writing.
-```
-
-> 🧪 **Runnable example:** the same LED flow, now via the Python API, lives in
-> [`examples/led_board.py`](examples/led_board.py). It runs without KiCAD (MemoryBackend):
->
-> ```bash
-> python -m examples.led_board
-> ```
-
----
-
-## 📤 Getting the design into KiCAD (recommended path)
-
-KiCAD 10's IPC API (kipy) **does not expose** a stable call to resolve the
-*geometry* of a library footprint, so **live** footprint placement is partial
-(the track is created, the footprint body may be skipped and logged). The
-**reliable, recommended** path is to **export** the design to a complete
-`.kicad_pcb` — footprints, pads, tracks and outline — and open it in KiCAD.
-Coppermind's serializer writes the file faithfully, independent of the IPC
-limitation.
-
-In the chat with the assistant, just ask:
-
-```text
-Export the current design to C:\Users\you\projects\my_project.kicad_pcb
-```
-
-This triggers the `design_export_pcb` tool. The result opens straight in KiCAD
-(**File → Open**) with everything in place. The same serializer feeds the
-`BatchBackend`, which runs **headless DRC and render** (`kicad-cli`) over the
-exported file.
-
----
-
-## 🔣 Schematic (Eeschema) — MVP
-
-KiCAD's IPC API is still **PCB-only** (Eeschema support is under development), so
-the schematic uses the same reliable path as the PCB: **generate a `.kicad_sch`**
-that opens in Eeschema. Coppermind embeds the symbol definitions (`lib_symbols`)
-in the file itself, so it is self-contained.
-
-MVP scope: a **flat** schematic with **symbols**, **wires** and **net labels**.
-Known symbols (`Device:R`, `Device:C`, `Device:L`, `Device:LED`, `Device:D`) plus
-a generic 2-pin body for any other `lib_id` — all render and connect. Hierarchical
-sheets and native ERC are left for a later phase.
-
-Tools: `schematic_create`, `symbol_add`, `wire_add`, `label_add`,
-`schematic_info`, `schematic_export_sch`.
-
-In the chat with the assistant:
-
-```text
-Create a schematic 'LEDSchematic'.
-Add a Device:R R1 330Ω resistor at 100,80 and a Device:LED D1 LED at 120,80.
-Wire them together and add a LED1 label.
-Export to C:\Users\you\projects\my.kicad_sch
-```
-
-The result opens in Eeschema (**File → Open**). See the generated example in
-[`LEDSchematic.kicad_sch`](LEDSchematic.kicad_sch).
-
----
-
-## 🔬 Quality: tests & CI
-
-- **190 tests** passing, **all without KiCAD or a network**. Live calls
-  (IPC/CLI/network/external engine) are isolated and marked `# pragma: no cover`,
-  covered by the CI **integration** job (KiCAD 10 + headless Java).
-- **CI-enforced invariants**, not promises:
-  - 🧮 **context budget**: fails if the visible tool set grows too large;
-  - 📚 **KB governance**: every rule needs a unique id, a citation, and a rationale;
-  - 🚫 **SWIG-free** (KiCAD 11 readiness): fails if any module imports `pcbnew`.
-
-The IPC adapter is validated by a **fake-kipy harness** driven by **recorded
-fixtures** (`tests/fixtures/`, `tests/conftest.py`): `load`/`apply`/`render` run
-end-to-end with no KiCAD. The integration job runs the same paths against real
-KiCAD (`tests/test_ipc_live.py`), and `scripts/record_kicad_fixture.py` captures
-new fixtures from a real board.
+## KiCad backend selection
 
 ```bash
-pytest                 # full suite (no KiCAD)
-ruff check src tests   # lint
-mypy src               # typing
+COPPERMIND_BACKEND=auto    # IPC when reachable, otherwise MemoryBackend
+COPPERMIND_BACKEND=ipc     # require an accessible KiCad IPC session
+COPPERMIND_BACKEND=memory  # development/offline
+```
+
+| Backend | Primary use |
+| --- | --- |
+| `MemoryBackend` | domain tests and offline work |
+| `IPCBackend` | live KiCad access through `kicad-python` / kipy |
+| `BatchBackend` | headless DRC/render/export through `kicad-cli` |
+
+On KiCad 10 the schematic path is intentionally hybrid: Circuit IR + composer write
+the `.kicad_sch`; `kicad-cli` performs real ERC and rendering. As the KiCad 11
+schematic IPC API matures, that backend can replace parts of the materialization
+layer without changing the semantic agent tools.
+
+---
+
+## Recommended agent workflow
+
+The **9 core tools** are intent-oriented:
+
+```text
+project_create
+find_symbol
+component_add
+create_net
+connect_pins
+inspect_component
+design_preview
+design_commit
+design_rollback
+```
+
+Another **5 progressive-discovery tools** expose the long tail without filling the
+model's context:
+
+```text
+list_tool_categories
+get_category_tools
+search_tools
+get_tool_schema
+execute_tool
+```
+
+Example semantic authoring flow:
+
+```text
+find_symbol("resistor")
+component_add(reference="R1", symbol="Device:R", value="10k")
+component_add(reference="C1", symbol="Device:C", value="100nF")
+create_net(name="SENSE")
+connect_pins(net="SENSE", pins=["R1.2", "C1.1"])
+design_preview()
+design_commit()
+```
+
+Raw schematic geometry primitives such as `symbol_add` and `wire_add` remain
+internal and are not exposed to the agent. Coordinate-level PCB operations remain
+available only as routed compatibility tools.
+
+---
+
+## Composer, ERC and visual review
+
+`design_preview` and `design_commit` automatically execute the safe schematic
+pipeline:
+
+```text
+Circuit IR
+ → compose
+ → visual review/reflow
+ → .kicad_sch serialization
+ → KiCad ERC
+ → gate
+```
+
+Additional tools are discovered on demand:
+
+```text
+schematic_compose
+schematic_erc
+schematic_export_composed
+schematic_visual_review
+schematic_visual_optimize
+schematic_visual_plan
+schematic_visual_apply
+schematic_visual_autofix
+```
+
+Visual auto-fix **cannot change electrical intent**. It only executes bounded typed
+geometry actions (`move_near`, `align`, `compact_block`, etc.) on a copy of the
+schematic. A candidate is discarded if the score regresses, a new ERC violation
+appears, or Circuit IR changes.
+
+Detailed documentation:
+
+- [`docs/MULTIMODAL_VISUAL_REVIEW.md`](docs/MULTIMODAL_VISUAL_REVIEW.md)
+- [`docs/VISUAL_AUTOFIX.md`](docs/VISUAL_AUTOFIX.md)
+
+---
+
+## Optional multimodal reviewer
+
+The deterministic reviewer works without any external service. To add a multimodal
+critic, configure a compatible provider:
+
+```bash
+COPPERMIND_VISUAL_PROVIDER=openai
+OPENAI_API_KEY=...
+COPPERMIND_VISUAL_MODEL=<multimodal-model>
+```
+
+When enabled, the real KiCad PDF and a bounded Circuit IR context are sent to that
+provider. Do not enable this for sensitive designs unless the resulting data transfer
+is acceptable under your security and privacy policy.
+
+---
+
+## PCB, autorouting and integrations
+
+The historical PCB core remains available: transactions, DRC, undo/redo, variants,
+supplier search, datasheets, `.kicad_pcb` export and Freerouting.
+
+Autorouting guide:
+
+[`docs/AUTORROTEAMENTO.md`](docs/AUTORROTEAMENTO.md)
+
+```text
+KiCad → Specctra DSN → Freerouting → SES → Coppermind
+                                      ↓
+                                preview / DRC
+                                      ↓
+                                commit / rollback
 ```
 
 ---
 
-## 🗂️ Project layout
+## Architectural safety guarantees
 
-```
-coppermind/
-├── README.md                  # Portuguese (main)
-├── README.en.md               # this file (English)
-├── LICENSE                    # MIT
-├── pyproject.toml
-├── docs/
-│   ├── ARQUITETURA.md         # architecture / decisions
-│   ├── AUTORROTEAMENTO.md     # Freerouting step-by-step guide
-│   ├── architecture.svg       # architecture diagram
-│   └── freerouting-flow.svg   # autorouting flow diagram
-├── src/coppermind/
-│   ├── server.py · session.py
-│   ├── domain/                # model, diff, operations (no KiCAD)
-│   ├── verification/          # structural checks
-│   ├── transactions/          # transactions + timeline
-│   ├── intelligence/          # KB, critique, blocks, placement, explain
-│   ├── schematic/             # hierarchy + netlist flattening
-│   ├── variants.py
-│   ├── backends/              # IPC · Batch · Memory · DRC · units · mapping
-│   ├── integrations/          # suppliers · datasheets · freerouting
-│   └── tools/                 # core · discovery · registry · routed
-├── tests/                     # 190 tests (no KiCAD)
-└── .github/workflows/ci.yml   # core (no KiCAD) + integration (KiCAD+Java)
-```
+Coppermind is designed so the model does not become an unrestricted code executor:
+
+- no arbitrary Python generated by the model is executed;
+- symbols are resolved from real KiCad libraries;
+- unresolved symbols fail explicitly;
+- Circuit IR remains the electrical source of truth;
+- changes go through preview/commit/rollback;
+- ERC/DRC are part of the gate;
+- visual auto-fix is copy-on-write and geometry-only;
+- tool file paths are validated;
+- Streamable HTTP is loopback-only;
+- the multimodal provider is optional and has a documented data boundary.
 
 ---
 
-## 🧭 Roadmap / phase status
+## Tests and CI
 
-| Phase | Theme | Status |
-| --- | --- | --- |
-| 0 | Foundation: domain, transactions, backends, core tools, CI | ✅ |
-| 1 | Verification in the loop: real IPC, BatchBackend, native DRC/ERC, render | ✅ |
-| 2 | Real progressive discovery + in-place edits in `plan_apply` | ✅ |
-| 3 | Design intelligence: citable KB, IPC-2221, critique, blocks | ✅ |
-| 4 | Collaboration & integrations: timeline, explain, suppliers, autorouter | ✅ |
-| 5 | Maturity: hierarchical schematic, variants, placement, KiCAD 11 readiness | ✅ |
+The CI workflow runs:
+
+- Python 3.11 and 3.12;
+- Ruff;
+- pytest + coverage;
+- mypy;
+- a **blocking** real KiCad 10 integration job;
+- schematic serialization, ERC, SVG/PDF rendering and Visual Auto-Fix against KiCad.
+
+Critical architectural claims are intended to be executable CI invariants, not just
+README statements.
 
 ---
 
-## ⚠️ Honest limitations
+## Current limitations
 
-- **Live library footprint placement** depends on a stable kipy API to fetch the
-  footprint *definition* — absent in kipy 0.7 / KiCAD 10. Coppermind already
-  **models** it in the pure plan and attempts placement, logging anything unresolved.
-- **Live track modify/remove**: tracks/vias now carry **stable ids** (
+- Streamable HTTP is **single-user per process**, not multi-tenant.
+- The HTTP endpoint has no built-in application authentication; use a trusted tunnel
+  or gateway.
+- KiCad 10 schematic creation uses `.kicad_sch` files + `kicad-cli`; live schematic
+  IPC will be adopted as the relevant API stabilizes.
+- The multimodal Visual Reviewer is probabilistic and optional; deterministic gates
+  remain the safety authority.
+- The PCB path still contains more geometry-level legacy operations than the semantic
+  schematic path.
+- Engineering review remains necessary before manufacturing hardware.
+
+---
+
+## Documentation
+
+See [`docs/README.md`](docs/README.md) for the documentation index:
+
+- [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) — current architecture and decisions;
+- [`docs/TRANSPORTES.md`](docs/TRANSPORTES.md) — Portuguese transport guide;
+- [`docs/TRANSPORTS.md`](docs/TRANSPORTS.md) — stdio, Streamable HTTP and tunnelling;
+- [`docs/MULTIMODAL_VISUAL_REVIEW.md`](docs/MULTIMODAL_VISUAL_REVIEW.md);
+- [`docs/VISUAL_AUTOFIX.md`](docs/VISUAL_AUTOFIX.md);
+- [`docs/AUTORROTEAMENTO.md`](docs/AUTORROTEAMENTO.md).
+
+---
+
+## Contributing
+
+Before opening a PR:
+
+```bash
+pip install -e ".[dev,ipc]"
+ruff check src tests
+pytest
+mypy src
+```
+
+Keep the core invariants intact: electrical intent belongs in Circuit IR, geometry is
+derived, discovery is progressive, changes are reversible, and model-generated
+arbitrary code is never executed.
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).
+
+Coppermind is an engineering-assistance tool. ERC/DRC, rules and AI reduce risk but
+do not replace electrical, thermal, mechanical, regulatory and safety validation
+before manufacturing.

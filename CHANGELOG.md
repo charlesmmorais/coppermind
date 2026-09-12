@@ -1,66 +1,72 @@
 # Changelog
 
 All notable changes to Coppermind are documented here.
-This project adheres to [Semantic Versioning](https://semver.org/) and
-[Keep a Changelog](https://keepachangelog.com/).
+This project follows [Semantic Versioning](https://semver.org/) and the
+[Keep a Changelog](https://keepachangelog.com/) structure.
 
 ## [Unreleased]
 
 ### Added
-- **Schematic (Eeschema) MVP** — drawable schematic model
-  (`Schematic`/`SchSymbol`/`Wire`/`NetLabel`), an embedded symbol library
-  (`schematic/symbols.py`, with a generic 2-pin fallback) and a `.kicad_sch`
-  serializer (`serialize/kicad_sch.py`) that produces a self-contained file
-  Eeschema opens. Tools: `schematic_create`, `symbol_add`, `wire_add`,
-  `label_add`, `schematic_info`, `schematic_export_sch`. KiCAD's IPC API is
-  PCB-only, so the schematic uses the same file-based path as the PCB export.
-- **MCP server fix** — tool binding strips the injected `session` parameter from
-  the public JSON schema (FastMCP could not serialize `Session`), fixing the
-  "Server disconnected" startup crash; `IPCBackend` now tolerates kipy `KiCad()`
-  constructor signature variants (no `headless` kwarg on newer versions).
-- **Data-driven EE knowledge base** — rules live in `intelligence/ee_rules.yaml`
-  (override via `COPPERMIND_RULES`); contributors extend design knowledge without
-  touching code. Expanded to 7 cited rules (IPC-2221 trace width, decoupling per
-  IC, ground present, differential-pair matching, annular ring, edge clearance,
-  thermal relief).
-- **Project persistence** — `persistence.py` with `save_board`/`load_board`
-  (lossless JSON, stable ids preserved) and the `project_save` / `project_open`
-  tools to save and resume a design.
-- **`.kicad_pcb` serializer** — `serialize/kicad_pcb.py` (`board_to_kicad_pcb`)
-  emits layers, nets, footprints-with-pads, segments, vias and the board outline.
-  `BatchBackend.apply` now writes the board so kicad-cli can DRC/render it
-  headlessly end-to-end. New `design_export_pcb` tool.
-- **Pad/pin domain model** — `Pad` on `Component`, rotation-aware
-  `pad_absolute_position`, pin-level netlist (`domain/netlist.py`), pad-aware DRC
-  (`PAD_SHORT`, `SINGLE_PAD_NET`) and board-driven placement
-  (`design_suggest_placement`); tools `component_add_pad`, `component_pads`,
-  `design_netlist`.
-- **Integration harness** — in-process fake of the kipy API driven by recorded
-  fixtures (`tests/conftest.py`, `tests/fixtures/`) that exercises
-  `IPCBackend.load/apply/render` with no KiCAD; `scripts/record_kicad_fixture.py`
-  captures fixtures from a real board; `tests/test_ipc_live.py` runs the same
-  paths against live KiCAD in the integration CI job.
+
+- **Dual MCP transport** — the `coppermind` command now supports both
+  `--transport stdio` and `--transport streamable-http`.
+- **Loopback Streamable HTTP endpoint** — configurable host/port/path with defaults
+  `127.0.0.1:8765/mcp`, intended for a trusted MCP tunnel/gateway.
+- **Circuit IR** — semantic `Component`, `Pin`, `Net`, `PinRef` and `Constraint`
+  models separate electrical intent from drawing coordinates.
+- **Real KiCad symbol resolution** — support for installed/project `.kicad_sym`,
+  unpacked `.kicad_symdir`, `sym-lib-table`, inherited symbols and real pin metadata.
+- **Semantic MCP authoring tools** — `find_symbol`, `component_add`, `create_net`,
+  `connect_pins` and `inspect_component` are part of the always-visible agent path.
+- **Semantic Composer** — deterministic Circuit IR lowering to real KiCad schematic
+  symbols, wires, labels and junctions.
+- **KiCad ERC loop** — generated `.kicad_sch` files are checked with real
+  `kicad-cli sch erc` when available, with structured feedback.
+- **Visual Reviewer** — deterministic readability score, SVG/PDF export through
+  KiCad, bounded reflow and optional multimodal critique.
+- **Visual Auto-Fix** — typed Layout Action IR (`move_near`, `move_group`, `align`,
+  `distribute`, `compact_block`, `separate_blocks`) with copy-on-write candidates,
+  ERC diff, score gates and rollback.
+- **Transport documentation** — Portuguese/English guides for stdio, Streamable HTTP,
+  loopback security and remote MCP tunnelling.
+- **Documentation index** under `docs/README.md`.
 
 ### Changed
-- **Stable item ids** — `Track`/`Via`/`Component` carry a stable `id` (UUID, or the
-  KiCAD KIID when loaded). `plan_apply` and the diff are now matched by id, so
-  reordering/mid-list inserts no longer produce phantom changes; live track
-  modify/remove is wired via `update_items`/`remove_items_by_id`.
-- **Freerouting timeout** — `FreeroutingRunner`/`autoroute_dsn` enforce a bounded
-  timeout (`subprocess.TimeoutExpired` → clear `RuntimeError`); IPC DRC and batch
-  subprocesses also time out.
+
+- The primary agent interface is now **semantic**, not coordinate-driven.
+- Raw schematic geometry primitives such as `symbol_add` and `wire_add` are hidden
+  from the agent tool registry.
+- Coordinate-level PCB operations remain available as routed compatibility tools.
+- `project_create` initializes board + schematic + Circuit IR in one design context.
+- Semantic state participates in preview/commit/rollback snapshots.
+- Visual changes are rederived from Circuit IR and cannot silently change electrical
+  connectivity.
+- MCP Python SDK is explicitly pinned to the maintained FastMCP 1.x line
+  (`mcp>=1.30,<2`) until a deliberate v2 migration is performed.
+- KiCad integration CI is now blocking instead of `continue-on-error`.
+- `README.md`, `README.en.md`, `docs/ARQUITETURA.md` and the architecture diagram were
+  rewritten to match the implemented system.
+
+### Removed
+
+- **Generic two-pin schematic fallback.** An unresolved KiCad symbol now fails
+  explicitly instead of creating a synthetic rectangle.
+- The old assumption that KiCad schematic work must always be coordinate-authored by
+  the LLM.
 
 ### Security
-- **Path validation** — `safety.py` (`validate_input_file`/`validate_output_path`)
-  resolves `~`, follows symlinks and enforces extensions for tool file paths
-  (`route_import_ses`, `route_autoroute`, `design_export_pcb`).
 
-## [0.1.0] — Phases 0–5
+- Streamable HTTP refuses non-loopback binds. Coppermind must not be exposed directly
+  on `0.0.0.0`/LAN/public interfaces in its current single-session design.
+- HTTP remote access is expected to be mediated by an authenticated trusted MCP
+  tunnel/gateway.
+- Multimodal review remains opt-in; the data boundary is documented.
+- Layout auto-fix remains geometry-only and checks Circuit IR invariance before
+  accepting a candidate.
 
-Foundation through maturity: KiCAD-independent domain + verification, transactional
-model (preview/diff/commit/rollback, undo/redo, timeline) with native DRC/ERC in
-the commit gate, IPC/Batch/Memory backends, real progressive tool discovery,
-citable design-intelligence (IPC-2221, critique, design blocks), collaboration and
-pluggable integrations (suppliers JLCPCB/LCSC, datasheets, Freerouting), hierarchical
-schematic netlist flattening, design variants, HPWL/barycenter placement, and a
-SWIG-free guard for KiCAD 11 readiness.
+## [0.1.0] — Foundation
+
+Initial foundation: KiCad-independent domain and verification, transactional
+preview/diff/commit/rollback with undo/redo, IPC/Batch/Memory backends, progressive
+tool discovery, EE knowledge rules, suppliers/datasheets, Freerouting, variants,
+project persistence and `.kicad_pcb` serialization.

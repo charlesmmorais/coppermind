@@ -31,11 +31,10 @@ jobs:
         run: mypy src
 
   integration:
-    # IPC integration against a real KiCAD. Phase 1 fills in the marked tests;
-    # kept non-blocking until the IPC mapping lands.
+    # End-to-end checks against KiCAD 10: real schematic serialization,
+    # SVG/PDF export, ERC and the guarded visual-auto-fix pipeline.
     name: Integration (headless KiCAD)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
