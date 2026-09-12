@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from coppermind.session import Session
+from coppermind.tools.composer import COMPOSER_ROUTED_TOOLS
 from coppermind.tools.core import component_place, net_create, net_route
 from coppermind.tools.routed import ROUTED_TOOLS
 
@@ -21,6 +22,7 @@ _CATEGORY_BY_PREFIX = {
     "net_": "net",
     "board_": "board",
     "design_": "design",
+    "schematic_": "schematic",
     "supplier_": "supplier",
     "route_": "routing",
     "variant_": "variant",
@@ -114,4 +116,4 @@ class ToolRegistry:
 
 
 _ROUTED_AGENT_TOOLS = tuple(fn for fn in ROUTED_TOOLS if fn.__name__ not in _AGENT_HIDDEN)
-REGISTRY = ToolRegistry(_ROUTED_AGENT_TOOLS + _LEGACY_ROUTED)
+REGISTRY = ToolRegistry(_ROUTED_AGENT_TOOLS + COMPOSER_ROUTED_TOOLS + _LEGACY_ROUTED)

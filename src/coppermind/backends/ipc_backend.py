@@ -29,6 +29,7 @@ import logging
 import os
 import subprocess
 import tempfile
+from typing import Any
 
 from coppermind.backends.base import KicadBackend
 from coppermind.backends.drc import build_drc_command, parse_drc_report
@@ -47,17 +48,17 @@ class IPCBackend(KicadBackend):
     name = "ipc"
 
     def __init__(self, headless: bool = False, file_path: str | None = None) -> None:
-        self._kicad = None  # type: ignore[var-annotated]
+        self._kicad: Any | None = None
         self._headless = headless
         self._file_path = file_path
 
     # -- connection ---------------------------------------------------------
 
-    def _connect(self):  # type: ignore[no-untyped-def]
+    def _connect(self) -> Any | None:
         if self._kicad is not None:
             return self._kicad
         try:
-            from kipy import KiCad  # type: ignore import-not-found
+            from kipy import KiCad  # type: ignore[import-not-found]
         except Exception as exc:  # pragma: no cover - depends on env
             logger.debug("kipy not importable: %s", exc)
             return None
@@ -80,17 +81,22 @@ class IPCBackend(KicadBackend):
         return None
 
     def is_available(self) -> bool:
-        return self._connect() is not None
+        """Return True only when a live KiCAD IPC session exposes an open board."""
+        try:
+            self._board()
+        except Exception:
+            return False
+        return True
 
-    def _board(self):  # type: ignore[no-untyped-def]
+    def _board(self) -> Any:
         kicad = self._connect()
         if kicad is None:
             raise RuntimeError("KiCAD IPC unavailable; start KiCAD with the IPC API enabled")
         return kicad.get_board()
 
     @staticmethod
-    def _vec(x_mm: float, y_mm: float):  # type: ignore[no-untyped-def]
-        from kipy.geometry import Vector2  # type: ignore import-not-found
+    def _vec(x_mm: float, y_mm: float) -> Any:
+        from kipy.geometry import Vector2  # type: ignore[import-not-found]
 
         try:
             return Vector2.from_xy(mm_to_nm(x_mm), mm_to_nm(y_mm))
@@ -112,14 +118,16 @@ class IPCBackend(KicadBackend):
             if not ref:
                 continue
             cid = str(getattr(fp, "id", "") or "")
-            result.components[ref] = Component(
+            component = Component(
                 reference=ref,
                 value=(fp.value_field.value if fp.value_field else ""),
                 footprint=self._footprint_id(fp),
                 position=Point(x=nm_to_mm(fp.position.x), y=nm_to_mm(fp.position.y)),
                 layer=_KICAD_TO_LAYER.get(fp.layer, Layer.F_CU),
-                **({"id": cid} if cid else {}),
             )
+            if cid:
+                component.id = cid
+            result.components[ref] = component
         for tr in board.get_tracks():
             if not hasattr(tr, "start"):
                 continue
@@ -147,8 +155,8 @@ class IPCBackend(KicadBackend):
     # -- write --------------------------------------------------------------
 
     def apply(self, board: Board) -> None:
-        from kipy.board_types import Net as KiNet  # type: ignore import-not-found
-        from kipy.board_types import Track as KiTrack  # type: ignore import-not-found
+        from kipy.board_types import Net as KiNet  # type: ignore[import-not-found]
+        from kipy.board_types import Track as KiTrack  # type: ignore[import-not-found]
 
         live = self.load(board.name)
         plan = plan_apply(live, board)
@@ -186,7 +194,7 @@ class IPCBackend(KicadBackend):
             raise
 
     def _place_footprints(self, kboard, comps: list[Component]) -> None:  # type: ignore[no-untyped-def]
-        from kipy.board_types import FootprintInstance  # type: ignore import-not-found
+        from kipy.board_types import FootprintInstance  # type: ignore[import-not-found]
 
         skipped = []
         to_create = []
@@ -213,8 +221,8 @@ class IPCBackend(KicadBackend):
             )
 
     def _place_vias(self, kboard, vias) -> None:  # type: ignore[no-untyped-def]
-        from kipy.board_types import Net as KiNet  # type: ignore import-not-found
-        from kipy.board_types import Via as KiVia  # type: ignore import-not-found
+        from kipy.board_types import Net as KiNet  # type: ignore[import-not-found]
+        from kipy.board_types import Via as KiVia  # type: ignore[import-not-found]
 
         items = []
         for v in vias:
@@ -236,7 +244,7 @@ class IPCBackend(KicadBackend):
         """
         if ":" not in footprint_id:
             raise ValueError("footprint id must be 'library:name'")
-        from kipy.common_types import LibraryIdentifier  # type: ignore import-not-found
+        from kipy.common_types import LibraryIdentifier  # type: ignore[import-not-found]
 
         lib, name = footprint_id.split(":", 1)
         ident = LibraryIdentifier()
@@ -266,7 +274,8 @@ class IPCBackend(KicadBackend):
             return
         wanted = set(refs)
         to_remove = [
-            fp for fp in kboard.get_footprints()
+            fp
+            for fp in kboard.get_footprints()
             if (fp.reference_field.value if fp.reference_field else "") in wanted
         ]
         if to_remove:
@@ -334,8 +343,12 @@ class IPCBackend(KicadBackend):
                 with open(pcb, "w", encoding="utf-8") as fh:
                     fh.write(kboard.get_as_string())
                 report = os.path.join(d, "drc.json")
-                subprocess.run(build_drc_command(pcb, report, kicad_cli=cli),
-                               check=True, capture_output=True, timeout=120)
+                subprocess.run(
+                    build_drc_command(pcb, report, kicad_cli=cli),
+                    check=True,
+                    capture_output=True,
+                    timeout=120,
+                )
                 with open(report, encoding="utf-8") as fh:
                     return parse_drc_report(json.load(fh))
         except Exception as exc:

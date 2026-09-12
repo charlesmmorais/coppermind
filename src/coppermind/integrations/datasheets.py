@@ -61,7 +61,7 @@ class LCSCDatasheetClient:
         self.base_url = base_url
 
     def get_datasheet_url(self, lcsc_id: str) -> str:  # pragma: no cover - network
-        import requests  # type: ignore import-not-found
+        import requests
 
         resp = requests.get(self.base_url, params={"productCode": lcsc_id}, timeout=20)
         resp.raise_for_status()
