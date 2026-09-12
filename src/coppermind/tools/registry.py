@@ -1,10 +1,8 @@
 """Tool registry + progressive discovery.
 
-This is the honest version of the reference project's inert "router": a small
-core set stays always-visible, while the long tail of routed tools is found on
-demand. The model browses categories, searches by keyword, fetches a single
-tool's schema, and invokes it via ``execute_tool`` — so routed definitions never
-sit in context until they're needed. A CI budget test keeps it that way.
+The default MCP surface is semantic. Coordinate-level PCB compatibility tools
+remain discoverable on demand, while raw schematic geometry primitives are kept
+internal so an LLM cannot regress to drawing wires by coordinates.
 """
 
 from __future__ import annotations
@@ -14,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from coppermind.session import Session
+from coppermind.tools.core import component_place, net_create, net_route
 from coppermind.tools.routed import ROUTED_TOOLS
 
 _CATEGORY_BY_PREFIX = {
@@ -27,6 +26,9 @@ _CATEGORY_BY_PREFIX = {
     "variant_": "variant",
     "datasheet_": "datasheet",
 }
+
+_AGENT_HIDDEN = {"symbol_add", "wire_add"}
+_LEGACY_ROUTED = (component_place, net_create, net_route)
 
 
 def _category_for(name: str) -> str:
@@ -111,4 +113,5 @@ class ToolRegistry:
         return sorted(self._specs)
 
 
-REGISTRY = ToolRegistry(ROUTED_TOOLS)
+_ROUTED_AGENT_TOOLS = tuple(fn for fn in ROUTED_TOOLS if fn.__name__ not in _AGENT_HIDDEN)
+REGISTRY = ToolRegistry(_ROUTED_AGENT_TOOLS + _LEGACY_ROUTED)
