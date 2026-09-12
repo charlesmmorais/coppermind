@@ -27,7 +27,7 @@ class ElectricalType(str, Enum):
     NO_CONNECT = "no_connect"
 
     @classmethod
-    def from_kicad(cls, value: str) -> "ElectricalType":
+    def from_kicad(cls, value: str) -> ElectricalType:
         aliases = {
             "power_input": cls.POWER_INPUT,
             "power_in": cls.POWER_INPUT,
@@ -66,7 +66,7 @@ class Component(BaseModel):
     properties: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _pin_keys_match(self) -> "Component":
+    def _pin_keys_match(self) -> Component:
         for key, pin in self.pins.items():
             if key != pin.number:
                 raise ValueError(f"pin key '{key}' does not match pin number '{pin.number}'")
