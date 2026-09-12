@@ -1,3 +1,4 @@
+import json
 import shutil
 
 import pytest
@@ -44,6 +45,35 @@ def test_composed_divider_is_electrically_connected_in_real_kicad():
         for item in result["kicad"]["violations"]
         if item.get("severity") in {"error", "fatal"}
     ]
-    assert not errors, result
+    if errors:
+        schematic = session.require_schematic()
+        diagnostics = {
+            "errors": [
+                {
+                    "description": item.get("description"),
+                    "type": item.get("raw", {}).get("type"),
+                    "items": item.get("raw", {}).get("items", []),
+                }
+                for item in errors
+            ],
+            "symbols": [
+                {
+                    "reference": symbol.reference,
+                    "lib_id": symbol.lib_id,
+                    "unit": symbol.unit,
+                    "at": [symbol.x, symbol.y, symbol.rotation],
+                }
+                for symbol in schematic.symbols
+            ],
+            "wires": [
+                [[wire.x1, wire.y1], [wire.x2, wire.y2]]
+                for wire in schematic.wires
+            ],
+            "labels": [
+                [label.text, label.x, label.y]
+                for label in schematic.labels
+            ],
+        }
+        pytest.fail(json.dumps(diagnostics, indent=2, sort_keys=True))
     assert result["kicad"]["blocking"] is False, result
     assert result["blocking"] is False, result
