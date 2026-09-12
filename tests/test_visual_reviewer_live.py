@@ -7,6 +7,7 @@ from coppermind.schematic.visual_ai import render_schematic_pdf
 from coppermind.schematic.visual_review import evaluate_visual_schematic
 from coppermind.session import Session
 from coppermind.tools.circuit import component_add, connect_pins, create_net
+from coppermind.tools.composer import schematic_visual_apply
 from coppermind.tools.core import project_create
 
 
@@ -65,3 +66,37 @@ def test_multimodal_reviewer_input_is_real_kicad_pdf():
     assert rendered["error"] is None, rendered
     assert rendered["bytes"] > 100
     assert rendered["_pdf_bytes"].startswith(b"%PDF")
+
+
+@pytest.mark.integration
+def test_phase5_candidate_runs_real_erc_and_preserves_circuit_ir():
+    if shutil.which("kicad-cli") is None:
+        pytest.skip("kicad-cli is not installed")
+
+    session = Session(backend=MemoryBackend())
+    project_create(session, "visual_autofix_live", 100, 80)
+    component_add(session, "R1", "Device:R", value="10k")
+    component_add(session, "C1", "Device:C", value="100n")
+    create_net(session, "SENSE")
+    connect_pins(session, "SENSE", ["R1.2", "C1.1"])
+    before = session.require_circuit().model_dump(mode="json")
+
+    result = schematic_visual_apply(
+        session,
+        actions=[
+            {
+                "type": "separate_blocks",
+                "refs": ["R1", "C1"],
+                "distance_mm": 12.7,
+                "rationale": "exercise the guarded Phase-5 candidate path",
+            }
+        ],
+        target_score=85.0,
+        run_external=True,
+    )
+
+    assert isinstance(result["accepted"], bool)
+    assert session.require_circuit().model_dump(mode="json") == before
+    assert result["pipeline"]["kicad"]["available"] is True, result
+    assert result["pipeline"]["kicad"].get("returncode") in (0, 5), result
+    assert not result["new_erc_violations"], result
