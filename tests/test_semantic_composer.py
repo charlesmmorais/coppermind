@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from coppermind.backends.memory_backend import MemoryBackend
+from coppermind.circuit import PinRef
 from coppermind.libraries import SymbolResolver
 from coppermind.schematic.composer import compose_schematic, symbol_pin_geometry
 from coppermind.schematic.erc import evaluate_schematic
@@ -103,7 +104,7 @@ def test_single_node_net_returns_feedback_without_blocking(tmp_path: Path):
     session = _session(tmp_path)
     component_add(session, "R1", "Device:R")
     create_net(session, "FLOATING")
-    session.require_circuit().connect("FLOATING", __import__("coppermind.circuit", fromlist=["PinRef"]).PinRef(component="R1", pin="1"))
+    session.require_circuit().connect("FLOATING", PinRef(component="R1", pin="1"))
     result = evaluate_schematic(
         session.require_circuit(), session.require_schematic(), run_external=False
     )
