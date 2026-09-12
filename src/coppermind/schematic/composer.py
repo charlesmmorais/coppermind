@@ -20,6 +20,10 @@ from coppermind.schematic.models import Junction, NetLabel, Schematic, SchLibrar
 _TOKEN_RE = re.compile(r'"(?:\\.|[^"\\])*"|\(|\)|[^\s()]+')
 _UNIT_SUFFIX_RE = re.compile(r"_(\d+)_(\d+)$")
 _GRID = 2.54
+_HORIZONTAL_LEVEL_GAP = 35.56
+_VERTICAL_ROW_GAP = 20.32
+_POWER_CHAIN_GAP = 25.4
+_POWER_FLAG_OFFSET = 25.4
 
 
 @dataclass(frozen=True)
@@ -149,6 +153,11 @@ def _coord(value: float) -> float:
     return round(value, 6)
 
 
+def _rotate(x: float, y: float, degrees: float) -> tuple[float, float]:
+    angle = math.radians(degrees)
+    return x * math.cos(angle) - y * math.sin(angle), x * math.sin(angle) + y * math.cos(angle)
+
+
 def _component_graph(circuit: Circuit) -> dict[str, set[str]]:
     graph: dict[str, set[str]] = {ref: set() for ref in circuit.components}
     for net in circuit.nets.values():
@@ -169,60 +178,301 @@ def _source_score(circuit: Circuit, reference: str) -> tuple[int, int, str]:
     return outputs - inputs, len(comp.pins), reference
 
 
-def _layout(circuit: Circuit, schematic: Schematic) -> None:
-    """Connectivity-aware deterministic placement on a 2.54 mm grid."""
-    graph = _component_graph(circuit)
-    symbols = {sym.reference: sym for sym in schematic.symbols}
+def _is_power_marker(circuit: Circuit, reference: str) -> bool:
+    component = circuit.components.get(reference)
+    return component is not None and component.symbol_id.lower().startswith("power:")
+
+
+def _is_power_flag(circuit: Circuit, reference: str) -> bool:
+    component = circuit.components.get(reference)
+    return component is not None and component.symbol_id.lower() == "power:pwr_flag"
+
+
+def _is_ground_marker(circuit: Circuit, reference: str) -> bool:
+    component = circuit.components.get(reference)
+    if component is None:
+        return False
+    token = f"{component.symbol_id}:{component.value}".lower()
+    return "gnd" in token or "vss" in token
+
+
+def _groups(graph: dict[str, set[str]]) -> list[list[str]]:
     unseen = set(graph)
-    group = 0
+    result: list[list[str]] = []
     while unseen:
-        component_refs: list[str] = []
         seed = min(unseen)
-        q = deque([seed])
         unseen.remove(seed)
+        q = deque([seed])
+        refs: list[str] = []
         while q:
             ref = q.popleft()
-            component_refs.append(ref)
+            refs.append(ref)
             for nxt in sorted(graph[ref]):
                 if nxt in unseen:
                     unseen.remove(nxt)
                     q.append(nxt)
+        result.append(sorted(refs))
+    return result
 
-        root = max(component_refs, key=lambda ref: _source_score(circuit, ref))
-        levels = {root: 0}
-        q = deque([root])
+
+def _primary_graph(graph: dict[str, set[str]], refs: list[str], primary: set[str]) -> dict[str, set[str]]:
+    return {
+        ref: {nxt for nxt in graph[ref] if nxt in primary}
+        for ref in refs
+        if ref in primary
+    }
+
+
+def _refs_on_power_nets(circuit: Circuit, refs: set[str], *, ground: bool) -> set[str]:
+    found: set[str] = set()
+    for net in circuit.nets.values():
+        net_refs = {node.component for node in net.nodes}
+        markers = [ref for ref in net_refs if ref in refs and _is_power_marker(circuit, ref)]
+        if not markers:
+            continue
+        if ground:
+            active = any(_is_ground_marker(circuit, ref) for ref in markers)
+        else:
+            active = any(
+                not _is_ground_marker(circuit, ref) and not _is_power_flag(circuit, ref)
+                for ref in markers
+            )
+        if active:
+            found.update(ref for ref in net_refs if ref in refs and not _is_power_marker(circuit, ref))
+    return found
+
+
+def _path_covering_graph(
+    graph: dict[str, set[str]],
+    starts: set[str],
+    ends: set[str],
+) -> list[str] | None:
+    if not graph or not starts or not ends:
+        return None
+    for start in sorted(starts):
+        q = deque([start])
+        parent: dict[str, str | None] = {start: None}
+        target: str | None = None
         while q:
             ref = q.popleft()
-            for nxt in sorted(graph[ref]):
-                if nxt in component_refs and nxt not in levels:
-                    levels[nxt] = levels[ref] + 1
+            if ref in ends:
+                target = ref
+                break
+            for nxt in sorted(graph.get(ref, ())):
+                if nxt not in parent:
+                    parent[nxt] = ref
                     q.append(nxt)
-        for ref in component_refs:
-            levels.setdefault(ref, 0)
-
-        rows_by_level: dict[int, list[str]] = {}
-        for ref in component_refs:
-            rows_by_level.setdefault(levels[ref], []).append(ref)
-        y_base = 25.4 + group * 76.2
-        for level in sorted(rows_by_level):
-            refs = sorted(rows_by_level[level])
-            for row, ref in enumerate(refs):
-                sym = symbols.get(ref)
-                if sym is None:
-                    continue
-                sym.x = _snap(25.4 + level * 50.8)
-                sym.y = _snap(y_base + row * 25.4)
-                sym.rotation = 0.0
-        group += 1
+        if target is None:
+            continue
+        path: list[str] = []
+        current: str | None = target
+        while current is not None:
+            path.append(current)
+            current = parent[current]
+        path.reverse()
+        if set(path) == set(graph):
+            return path
+    return None
 
 
-def _rotate(x: float, y: float, degrees: float) -> tuple[float, float]:
-    angle = math.radians(degrees)
-    return x * math.cos(angle) - y * math.sin(angle), x * math.sin(angle) + y * math.cos(angle)
+def _symbol_by_ref(schematic: Schematic, reference: str):
+    return next((item for item in schematic.symbols if item.reference == reference), None)
+
+
+def _place_symbol_pin_at(
+    schematic: Schematic,
+    reference: str,
+    pin_number: str,
+    target: tuple[float, float],
+) -> bool:
+    symbol = _symbol_by_ref(schematic, reference)
+    if symbol is None:
+        return False
+    library = schematic.library_symbols.get(symbol.lib_id)
+    if library is None:
+        return False
+    pin = symbol_pin_geometry(library, symbol.unit).get(pin_number)
+    if pin is None:
+        return False
+    symbol.rotation = 0.0
+    dx, dy = _rotate(pin.x, -pin.y, symbol.rotation)
+    symbol.x = _coord(target[0] - dx)
+    symbol.y = _coord(target[1] - dy)
+    return True
+
+
+def _connected_pin(circuit: Circuit, net_name: str, reference: str) -> str | None:
+    net = circuit.nets.get(net_name)
+    if net is None:
+        return None
+    for node in net.nodes:
+        if node.component == reference:
+            return node.pin
+    return None
+
+
+def _place_power_markers(
+    circuit: Circuit,
+    schematic: Schematic,
+    group_refs: set[str],
+    primary: set[str],
+) -> None:
+    """Attach power glyphs to their rail and keep PWR_FLAGs beside the rail.
+
+    Power symbols are annotations/rail declarations, not topology stages.  The
+    old BFS layout treated them as ordinary components, which stretched simple
+    dividers across the page.  Here their electrical pins are placed directly
+    on (or just beside) the functional component pin they annotate.
+    """
+    for net_name in sorted(circuit.nets):
+        net = circuit.nets[net_name]
+        nodes = [node for node in net.nodes if node.component in group_refs]
+        markers = sorted(
+            {node.component for node in nodes if _is_power_marker(circuit, node.component)}
+        )
+        primary_nodes = [node for node in nodes if node.component in primary]
+        if not markers or not primary_nodes:
+            continue
+
+        anchors = [
+            anchor
+            for node in primary_nodes
+            if (anchor := _pin_anchor(schematic, node.component, node.pin)) is not None
+        ]
+        if not anchors:
+            continue
+        base = min(anchors, key=lambda point: (point[1], point[0]))
+
+        ordinary = [ref for ref in markers if not _is_power_flag(circuit, ref)]
+        flags = [ref for ref in markers if _is_power_flag(circuit, ref)]
+
+        for index, ref in enumerate(ordinary):
+            pin = _connected_pin(circuit, net_name, ref)
+            if pin is None:
+                continue
+            target = base if index == 0 else (_coord(base[0] + (index * 15.24)), base[1])
+            _place_symbol_pin_at(schematic, ref, pin, target)
+
+        for index, ref in enumerate(flags):
+            pin = _connected_pin(circuit, net_name, ref)
+            if pin is None:
+                continue
+            direction = -1.0 if index % 2 == 0 else 1.0
+            rank = index // 2 + 1
+            target = (
+                _coord(base[0] + direction * _POWER_FLAG_OFFSET * rank),
+                base[1],
+            )
+            _place_symbol_pin_at(schematic, ref, pin, target)
+
+
+def _layout_power_chain(
+    circuit: Circuit,
+    schematic: Schematic,
+    refs: list[str],
+    graph: dict[str, set[str]],
+    y_base: float,
+) -> float | None:
+    primary = {ref for ref in refs if not _is_power_marker(circuit, ref)}
+    markers = {ref for ref in refs if _is_power_marker(circuit, ref)}
+    if not primary or not markers:
+        return None
+    if any(len(circuit.components[ref].pins) > 2 for ref in primary):
+        return None
+
+    pgraph = _primary_graph(graph, refs, primary)
+    if any(len(neighbors) > 2 for neighbors in pgraph.values()):
+        return None
+
+    top = _refs_on_power_nets(circuit, set(refs), ground=False)
+    bottom = _refs_on_power_nets(circuit, set(refs), ground=True)
+    order = _path_covering_graph(pgraph, top, bottom)
+    if order is None:
+        return None
+
+    symbols = {symbol.reference: symbol for symbol in schematic.symbols}
+    x = _snap(76.2)
+    start_y = _snap(y_base + 12.7)
+    for index, ref in enumerate(order):
+        symbol = symbols.get(ref)
+        if symbol is None:
+            continue
+        symbol.x = x
+        symbol.y = _snap(start_y + index * _POWER_CHAIN_GAP)
+        symbol.rotation = 0.0
+
+    _place_power_markers(circuit, schematic, set(refs), primary)
+    return max(76.2, len(order) * _POWER_CHAIN_GAP + 38.1)
+
+
+def _layout_generic_group(
+    circuit: Circuit,
+    schematic: Schematic,
+    refs: list[str],
+    graph: dict[str, set[str]],
+    y_base: float,
+) -> float:
+    symbols = {sym.reference: sym for sym in schematic.symbols}
+    primary = {ref for ref in refs if not _is_power_marker(circuit, ref)}
+    if not primary:
+        primary = set(refs)
+
+    pgraph = _primary_graph(graph, refs, primary)
+    root = max(primary, key=lambda ref: _source_score(circuit, ref))
+    levels = {root: 0}
+    q = deque([root])
+    while q:
+        ref = q.popleft()
+        for nxt in sorted(pgraph.get(ref, ())):
+            if nxt not in levels:
+                levels[nxt] = levels[ref] + 1
+                q.append(nxt)
+    for ref in primary:
+        levels.setdefault(ref, 0)
+
+    rows_by_level: dict[int, list[str]] = {}
+    for ref in primary:
+        rows_by_level.setdefault(levels[ref], []).append(ref)
+
+    max_rows = 1
+    for level in sorted(rows_by_level):
+        level_refs = sorted(rows_by_level[level])
+        max_rows = max(max_rows, len(level_refs))
+        for row, ref in enumerate(level_refs):
+            symbol = symbols.get(ref)
+            if symbol is None:
+                continue
+            symbol.x = _snap(38.1 + level * _HORIZONTAL_LEVEL_GAP)
+            symbol.y = _snap(y_base + row * _VERTICAL_ROW_GAP)
+            symbol.rotation = 0.0
+
+    marker_refs = set(refs) - primary
+    if marker_refs:
+        _place_power_markers(circuit, schematic, set(refs), primary)
+
+    return max(50.8, max_rows * _VERTICAL_ROW_GAP + 25.4)
+
+
+def _layout(circuit: Circuit, schematic: Schematic) -> None:
+    """Connectivity-aware deterministic placement.
+
+    Functional signal blocks still flow left-to-right.  A simple two-pin chain
+    bounded by named power rails is instead laid out top-to-bottom, matching
+    conventional schematic reading for dividers, pull-ups and bias chains.
+    Power glyphs/PWR_FLAGs are rail annotations and are placed near their
+    functional endpoint instead of becoming BFS stages of their own.
+    """
+    graph = _component_graph(circuit)
+    y_cursor = 38.1
+    for refs in _groups(graph):
+        consumed = _layout_power_chain(circuit, schematic, refs, graph, y_cursor)
+        if consumed is None:
+            consumed = _layout_generic_group(circuit, schematic, refs, graph, y_cursor)
+        y_cursor += consumed
 
 
 def _pin_anchor(schematic: Schematic, reference: str, pin_number: str) -> tuple[float, float] | None:
-    sym = next((item for item in schematic.symbols if item.reference == reference), None)
+    sym = _symbol_by_ref(schematic, reference)
     if sym is None:
         return None
     library = schematic.library_symbols.get(sym.lib_id)
@@ -293,7 +543,29 @@ def _route_net(name: str, endpoints: list[tuple[float, float]]) -> tuple[list[Wi
             vertical_sides = int(y > min_y) + int(y < max_y)
             if branches + on_trunk + vertical_sides >= 3:
                 junctions.append(Junction(x=trunk_x, y=y))
-    return wires, NetLabel(text=name, x=trunk_x, y=ys[0]), junctions
+
+    # Keep labels on the electrical wire, but away from the first pin endpoint.
+    # A midpoint/median placement is more readable for simple two-node nets.
+    if len(points) == 2 and math.isclose(points[0][0], points[1][0]):
+        label_x = points[0][0]
+        label_y = _coord((points[0][1] + points[1][1]) / 2.0)
+    elif len(points) == 2 and math.isclose(points[0][1], points[1][1]):
+        label_x = _coord((points[0][0] + points[1][0]) / 2.0)
+        label_y = points[0][1]
+    else:
+        label_x = trunk_x
+        label_y = ys[len(ys) // 2]
+    return wires, NetLabel(text=name, x=label_x, y=label_y), junctions
+
+
+def _net_has_named_power_symbol(circuit: Circuit, net_name: str) -> bool:
+    net = circuit.nets.get(net_name)
+    if net is None:
+        return False
+    return any(
+        _is_power_marker(circuit, node.component) and not _is_power_flag(circuit, node.component)
+        for node in net.nodes
+    )
 
 
 def compose_schematic(circuit: Circuit, schematic: Schematic) -> ComposeReport:
@@ -322,7 +594,8 @@ def compose_schematic(circuit: Circuit, schematic: Schematic) -> ComposeReport:
             continue
         wires, label, junctions = _route_net(net_name, endpoints)
         schematic.wires.extend(wires)
-        schematic.labels.append(label)
+        if not _net_has_named_power_symbol(circuit, net_name):
+            schematic.labels.append(label)
         schematic.junctions.extend(junctions)
 
     unique_junctions: dict[tuple[float, float], Junction] = {}
