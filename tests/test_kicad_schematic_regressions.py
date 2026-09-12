@@ -4,7 +4,7 @@ import pytest
 
 from coppermind.backends.memory_backend import MemoryBackend
 from coppermind.libraries import SymbolResolver
-from coppermind.schematic.composer import compose_schematic
+from coppermind.schematic.composer import _route_net, compose_schematic
 from coppermind.session import Session
 from coppermind.tools.circuit import component_add, connect_pins, create_net
 from coppermind.tools.composer import schematic_export_composed
@@ -33,10 +33,13 @@ POWER_LIB = r'''(kicad_symbol_lib
   (symbol "PWR_FLAG"
     (property "Reference" "#FLG" (at 0 0 0) (effects (font (size 1.27 1.27))))
     (property "Value" "PWR_FLAG" (at 0 0 0) (effects (font (size 1.27 1.27))))
-    (symbol "PWR_FLAG_0_1"
-      (pin power_out line (at 0 0 0) (length 0)
+    (symbol "PWR_FLAG_0_0"
+      (pin power_out line (at 0 0 90) (length 0)
         (name "pwr" (effects (font (size 1.27 1.27))))
-        (number "1" (effects (font (size 1.27 1.27)))))))
+        (number "1" (effects (font (size 1.27 1.27)))))
+    (symbol "PWR_FLAG_0_1"
+      (polyline (pts (xy 0 0) (xy 0 2.54))
+        (stroke (width 0) (type default)) (fill (type none)))))
 )'''
 
 
@@ -96,6 +99,30 @@ def test_vertical_half_grid_pin_anchors_are_not_snapped(tmp_path: Path):
 
     # The real connection points are on 1.27/3.81 mm offsets, not 2.54 mm grid.
     assert any(not float(y / 2.54).is_integer() for _, y in expected)
+
+
+def test_router_splits_vertical_trunk_at_collinear_pin_node():
+    wires, _, junctions = _route_net(
+        "POWER",
+        [(127.0, 21.59), (177.8, 25.4), (177.8, 50.8)],
+    )
+
+    segments = {
+        ((wire.x1, wire.y1), (wire.x2, wire.y2))
+        for wire in wires
+    }
+    assert ((177.8, 21.59), (177.8, 25.4)) in segments
+    assert ((177.8, 25.4), (177.8, 50.8)) in segments
+    assert not any(
+        {wire.y1, wire.y2} == {21.59, 50.8}
+        and wire.x1 == pytest.approx(177.8)
+        and wire.x2 == pytest.approx(177.8)
+        for wire in wires
+    )
+    assert any(
+        junction.x == pytest.approx(177.8) and junction.y == pytest.approx(25.4)
+        for junction in junctions
+    )
 
 
 def test_export_blocks_validation_failure_unless_explicitly_overridden(
