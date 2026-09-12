@@ -188,7 +188,7 @@ def connect_pins(session: Session, net: str, pins: list[str]) -> dict:
     }
 
 
-def place_relative(
+def component_place_relative(
     session: Session,
     reference: str,
     anchor: str,
@@ -220,7 +220,7 @@ def place_relative(
     }
 
 
-def freeze_placement(session: Session, references: list[str] | None = None) -> dict:
+def component_freeze_placement(session: Session, references: list[str] | None = None) -> dict:
     """Mark current component placements as stable for the incremental authoring loop."""
     circuit = session.require_circuit()
     selected = references or sorted(circuit.components)
@@ -338,9 +338,4 @@ CIRCUIT_TOOLS = (
     create_net,
     inspect_component,
     find_symbol,
-    place_relative,
-    freeze_placement,
-    connect_incremental,
-    schematic_checkpoint,
-    schematic_export_current,
 )
