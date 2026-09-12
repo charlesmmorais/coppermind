@@ -30,6 +30,7 @@ _DIRECTIONS = {
     "above": (0.0, -1.0),
     "below": (0.0, 1.0),
 }
+_BLOCKING_SEVERITIES = {"error", "fatal"}
 
 
 def _snap(value: float) -> float:
@@ -149,17 +150,45 @@ def _incremental_semantic_violations(circuit: Circuit, schematic: Schematic) -> 
     return violations
 
 
+def _is_expected_incomplete_erc(item: dict) -> bool:
+    text = str(item.get("description") or item.get("message") or "").lower()
+    return "not connected" in text or "unconnected" in text
+
+
+def _progressive_erc_view(kicad: dict) -> dict:
+    """Keep ERC findings visible but do not block on expected dangling pins."""
+    result = dict(kicad)
+    violations: list[dict] = []
+    blocking = bool(result.get("blocking")) and not bool(result.get("violations"))
+    for raw in result.get("violations", []):
+        item = dict(raw)
+        severity = str(item.get("severity") or "warning").lower()
+        ignored = severity in _BLOCKING_SEVERITIES and _is_expected_incomplete_erc(item)
+        if ignored:
+            item["progressive_ignored"] = True
+        elif severity in _BLOCKING_SEVERITIES:
+            blocking = True
+        violations.append(item)
+    result["violations"] = violations
+    result["blocking"] = blocking
+    result["progressive"] = True
+    return result
+
+
 def validate_incremental_schematic(
     circuit: Circuit,
     schematic: Schematic,
     resolver: SymbolResolver | None = None,
     run_external: bool = True,
+    allow_incomplete: bool = False,
 ) -> dict:
     """Validate current incremental geometry without invoking global composition."""
     semantic = _incremental_semantic_violations(circuit, schematic)
     semantic_blocking = bool(semantic)
     if run_external and not semantic_blocking:
         kicad = run_kicad_erc(schematic, resolver)
+        if allow_incomplete:
+            kicad = _progressive_erc_view(kicad)
     else:
         kicad = {
             "available": False,
@@ -171,6 +200,7 @@ def validate_incremental_schematic(
         }
     return {
         "mode": "incremental",
+        "allow_incomplete": allow_incomplete,
         "semantic_violations": semantic,
         "kicad": kicad,
         "blocking": semantic_blocking or bool(kicad.get("blocking")),
@@ -186,11 +216,14 @@ def export_incremental_schematic(
     run_external: bool = True,
 ) -> dict:
     """Validate and export the current incremental geometry as KiCad schematic."""
+    # Final export is intentionally strict: progressive incomplete-pin handling
+    # belongs to checkpoints, never to a production export gate.
     validation = validate_incremental_schematic(
         circuit,
         schematic,
         resolver=resolver,
         run_external=run_external,
+        allow_incomplete=False,
     )
     if validation["blocking"] and not allow_invalid:
         return {
