@@ -11,6 +11,7 @@ from coppermind.circuit import Circuit
 from coppermind.domain import operations as ops
 from coppermind.domain.models import Layer
 from coppermind.intelligence.critique import critique as run_critique
+from coppermind.schematic.erc import evaluate_schematic
 from coppermind.schematic.models import Schematic
 from coppermind.session import Session
 from coppermind.tools.circuit import CIRCUIT_TOOLS
@@ -77,9 +78,16 @@ def net_route(
     return {"ok": True, "routed_net": net, "pending_commit": True}
 
 
+def _evaluate_semantic(session: Session) -> dict:
+    circuit = session.require_circuit()
+    schematic = session.require_schematic()
+    return evaluate_schematic(circuit, schematic, resolver=session.symbol_resolver)
+
+
 def design_preview(session: Session) -> dict:
-    """Preview pending PCB and semantic Circuit IR changes before commit."""
+    """Compose Circuit IR, run ERC and preview all pending changes before commit."""
     doc = session.require_document()
+    semantic = _evaluate_semantic(session)
     diff, violations = doc.preview()
     working = doc.working()
     render = session.backend.render(working)
@@ -89,17 +97,27 @@ def design_preview(session: Session) -> dict:
         "diff": diff.summary(),
         "diff_detail": diff.model_dump(),
         "violations": [v.model_dump() for v in violations],
-        "would_block": any(v.severity >= 30 for v in violations),
+        "would_block": any(v.severity >= 30 for v in violations) or semantic["blocking"],
         "advice": [v.model_dump() for v in advice],
         "render_svg": render.decode("utf-8") if render else None,
         "semantic_dirty": session.semantic_dirty(),
         "circuit": circuit.model_dump(mode="json") if circuit is not None else None,
+        "schematic_pipeline": semantic,
     }
 
 
 def design_commit(session: Session) -> dict:
-    """Verify and commit PCB plus semantic Circuit IR changes."""
+    """Compose + ERC-gate the schematic, then commit PCB and semantic state."""
     doc = session.require_document()
+    semantic = _evaluate_semantic(session)
+    if semantic["blocking"]:
+        return {
+            "committed": False,
+            "summary": "commit blocked by schematic composition/ERC",
+            "semantic_committed": False,
+            "violations": [],
+            "schematic_pipeline": semantic,
+        }
     result = doc.commit()
     if result.committed:
         session.commit_semantic_state()
@@ -108,6 +126,7 @@ def design_commit(session: Session) -> dict:
         "summary": result.summary(),
         "semantic_committed": result.committed and not session.semantic_dirty(),
         "violations": [v.model_dump() for v in result.violations],
+        "schematic_pipeline": semantic,
     }
 
 
