@@ -5,6 +5,12 @@ The example deliberately creates a denser passive network with VIN, VOUT, FB,
 SENSE and GND, parallel resistor branches, and a VIN->SENSE cross-coupling
 branch that tends to exercise orthogonal routing near labels.
 
+Because this is intentionally a visual stress test, ``design_preview`` may mark
+the layout as visually blocking even when semantic/ERC validation is clean.
+In that case the example skips ``design_commit`` and still attempts the routed
+``schematic_export_composed`` tool. That export has its own semantic/ERC gate
+and will refuse electrically invalid output by default.
+
 Run from the repository root:
 
     python -m examples.dense_label_clearance_mcp
@@ -42,6 +48,26 @@ async def call(session: ClientSession, name: str, arguments: dict[str, Any] | No
     if getattr(result, "isError", False):
         raise RuntimeError(f"MCP tool {name!r} failed")
     return data
+
+
+def _visual_summary(preview: dict[str, Any]) -> None:
+    visual = preview.get("visual_review")
+    if not isinstance(visual, dict):
+        return
+    review = visual.get("review")
+    if not isinstance(review, dict):
+        return
+    print("\n== VISUAL STRESS SUMMARY ==")
+    print("score:", review.get("score"))
+    print("blocking:", review.get("blocking"))
+    findings = review.get("findings")
+    if isinstance(findings, list) and findings:
+        print("findings:")
+        for finding in findings:
+            if isinstance(finding, dict):
+                print(" -", finding.get("message", finding))
+            else:
+                print(" -", finding)
 
 
 async def main() -> None:
@@ -132,12 +158,22 @@ async def main() -> None:
             )
 
             preview = await call(session, "design_preview")
-            if isinstance(preview, dict) and preview.get("would_block"):
-                raise RuntimeError("design_preview is blocking; inspect the pipeline above")
+            preview_blocks = bool(
+                isinstance(preview, dict) and preview.get("would_block")
+            )
+            if isinstance(preview, dict):
+                _visual_summary(preview)
 
-            committed = await call(session, "design_commit")
-            if isinstance(committed, dict) and not committed.get("committed"):
-                raise RuntimeError("design_commit was blocked; inspect the pipeline above")
+            if preview_blocks:
+                print(
+                    "\nNOTE: design_preview blocked this deliberately dense layout. "
+                    "Skipping design_commit and continuing to the export's "
+                    "independent semantic/ERC validation gate."
+                )
+            else:
+                committed = await call(session, "design_commit")
+                if isinstance(committed, dict) and not committed.get("committed"):
+                    raise RuntimeError("design_commit was blocked; inspect the pipeline above")
 
             exported = await call(
                 session,
@@ -148,9 +184,15 @@ async def main() -> None:
                 },
             )
             if isinstance(exported, dict) and not exported.get("ok", True):
-                raise RuntimeError("schematic export failed")
+                reason = exported.get("reason", "schematic export failed")
+                raise RuntimeError(f"schematic export failed: {reason}")
 
             print(f"\nGenerated: {OUTPUT}")
+            if preview_blocks:
+                print(
+                    "Electrical/ERC export gate passed; inspect the generated KiCad "
+                    "file specifically for label clearance and visual collisions."
+                )
 
 
 if __name__ == "__main__":
