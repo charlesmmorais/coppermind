@@ -133,11 +133,10 @@ def route_net_incremental(circuit: Circuit, schematic: Schematic, net_name: str)
 
 
 def _owned_geometry_nets(schematic: Schematic) -> set[str]:
-    return {
-        item.net
-        for item in (*schematic.wires, *schematic.labels, *schematic.junctions)
-        if item.net
-    }
+    nets = {wire.net for wire in schematic.wires if wire.net}
+    nets.update(label.net for label in schematic.labels if label.net)
+    nets.update(junction.net for junction in schematic.junctions if junction.net)
+    return nets
 
 
 def _incremental_semantic_violations(circuit: Circuit, schematic: Schematic) -> list[dict]:
