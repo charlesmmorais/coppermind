@@ -5,6 +5,7 @@ import pytest
 from coppermind.backends.memory_backend import MemoryBackend
 from coppermind.libraries import SymbolResolver
 from coppermind.schematic.composer import _pin_anchor, compose_schematic
+from coppermind.schematic.visual_review import review_schematic_visual
 from coppermind.session import Session
 from coppermind.tools.circuit import component_add, connect_pins, create_net
 from coppermind.tools.core import project_create
@@ -95,10 +96,17 @@ def test_power_bounded_passive_chain_is_compact_and_vertical(tmp_path: Path):
 
     top = _pin_anchor(schematic, "R1", "1")
     bottom = _pin_anchor(schematic, "R2", "2")
+    supply = _pin_anchor(schematic, "#PWR01", "1")
+    ground = _pin_anchor(schematic, "#PWR02", "1")
     assert top is not None and bottom is not None
+    assert supply is not None and ground is not None
 
-    assert _pin_anchor(schematic, "#PWR01", "1") == pytest.approx(top)
-    assert _pin_anchor(schematic, "#PWR02", "1") == pytest.approx(bottom)
+    # Named rail glyphs are separated from the functional symbol and joined by
+    # a short vertical wire, avoiding an intentional visual overlap.
+    assert supply[0] == pytest.approx(top[0])
+    assert supply[1] == pytest.approx(top[1] - 15.24)
+    assert ground[0] == pytest.approx(bottom[0])
+    assert ground[1] == pytest.approx(bottom[1] + 15.24)
 
     top_flag = _pin_anchor(schematic, "#FLG01", "1")
     bottom_flag = _pin_anchor(schematic, "#FLG02", "1")
@@ -120,4 +128,12 @@ def test_power_bounded_passive_chain_is_compact_and_vertical(tmp_path: Path):
     xs = [symbol.x for symbol in schematic.symbols]
     ys = [symbol.y for symbol in schematic.symbols]
     assert max(xs) - min(xs) <= 30.48
-    assert max(ys) - min(ys) <= 40.64
+    assert max(ys) - min(ys) <= 66.04
+
+    visual = review_schematic_visual(
+        schematic,
+        circuit=session.require_circuit(),
+        run_render=False,
+    )
+    assert visual["score"] >= 85
+    assert visual["blocking"] is False
