@@ -10,6 +10,7 @@ from pathlib import Path
 
 from coppermind.safety import validate_output_path
 from coppermind.schematic.composer import compose_schematic
+from coppermind.schematic.visual_ai import apply_multimodal_review
 from coppermind.schematic.visual_review import (
     evaluate_visual_schematic,
     optimize_visual_layout,
@@ -17,6 +18,15 @@ from coppermind.schematic.visual_review import (
 )
 from coppermind.serialize.kicad_sch import schematic_to_kicad_sch
 from coppermind.session import Session
+
+
+def _apply_ai(session: Session, pipeline: dict) -> dict:
+    return apply_multimodal_review(
+        pipeline,
+        session.require_circuit(),
+        session.require_schematic(),
+        resolver=session.symbol_resolver,
+    )
 
 
 def schematic_compose(session: Session) -> dict:
@@ -27,22 +37,36 @@ def schematic_compose(session: Session) -> dict:
 
 def schematic_erc(session: Session) -> dict:
     """Compose, visually review and run semantic checks plus KiCad CLI ERC."""
-    return evaluate_visual_schematic(
+    pipeline = evaluate_visual_schematic(
         session.require_circuit(),
         session.require_schematic(),
         resolver=session.symbol_resolver,
     )
+    return _apply_ai(session, pipeline)
 
 
 def schematic_visual_review(session: Session, include_svg: bool = False) -> dict:
-    """Review current composed schematic readability and KiCad SVG rendering."""
+    """Review readability with deterministic metrics and optional multimodal critique."""
     compose_schematic(session.require_circuit(), session.require_schematic())
-    return review_schematic_visual(
+    review = review_schematic_visual(
         session.require_schematic(),
         circuit=session.require_circuit(),
         resolver=session.symbol_resolver,
         include_svg=include_svg,
     )
+    pipeline = {
+        "blocking": bool(review["blocking"]),
+        "visual_review": {
+            "target_score": 85.0,
+            "target_met": bool(review["score"] >= 85.0),
+            "changed": False,
+            "attempts": [],
+            "blocking": bool(review["blocking"]),
+            "review": review,
+        },
+    }
+    enhanced = _apply_ai(session, pipeline)
+    return enhanced["visual_review"]["review"]
 
 
 def schematic_visual_optimize(
@@ -51,9 +75,9 @@ def schematic_visual_optimize(
     max_passes: int = 4,
     include_svg: bool = False,
 ) -> dict:
-    """Optimize schematic geometry only, preserving Circuit IR electrical intent."""
+    """Optimize geometry, then attach optional multimodal visual findings."""
     compose_schematic(session.require_circuit(), session.require_schematic())
-    return optimize_visual_layout(
+    visual = optimize_visual_layout(
         session.require_circuit(),
         session.require_schematic(),
         resolver=session.symbol_resolver,
@@ -61,6 +85,9 @@ def schematic_visual_optimize(
         max_passes=max_passes,
         include_svg=include_svg,
     )
+    pipeline = {"blocking": bool(visual["blocking"]), "visual_review": visual}
+    enhanced = _apply_ai(session, pipeline)
+    return enhanced["visual_review"]
 
 
 def schematic_export_composed(session: Session, path: str) -> dict:
