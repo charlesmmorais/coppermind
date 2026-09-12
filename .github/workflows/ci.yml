@@ -25,10 +25,10 @@ jobs:
           pip install -e ".[dev]"
       - name: Lint
         run: ruff check src tests
-      - name: Type check
-        run: mypy src
       - name: Tests
         run: pytest --cov=coppermind --cov-report=term-missing
+      - name: Type check
+        run: mypy src
 
   integration:
     # IPC integration against a real KiCAD. Phase 1 fills in the marked tests;
