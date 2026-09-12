@@ -45,13 +45,18 @@ class JLCPCBProvider(SupplierProvider):
         self.base_url = base_url
 
     def _get_json(self, path: str, params: dict) -> dict:  # pragma: no cover - network
-        import requests  # type: ignore import-not-found
+        import requests
 
         resp = requests.get(f"{self.base_url}{path}", params=params, timeout=20)
         resp.raise_for_status()
         return resp.json()
 
-    def search(self, query: str, package: str | None = None, basic_only: bool = False) -> list[SupplierPart]:  # pragma: no cover - network
+    def search(
+        self,
+        query: str,
+        package: str | None = None,
+        basic_only: bool = False,
+    ) -> list[SupplierPart]:  # pragma: no cover - network
         data = self._get_json("/api/search", {"q": query})
         parts = [parse_jlcsearch_part(r) for r in data.get("results", [])]
         if package:
