@@ -10,7 +10,11 @@ from pathlib import Path
 
 from coppermind.safety import validate_output_path
 from coppermind.schematic.composer import compose_schematic
-from coppermind.schematic.erc import evaluate_schematic
+from coppermind.schematic.visual_review import (
+    evaluate_visual_schematic,
+    optimize_visual_layout,
+    review_schematic_visual,
+)
 from coppermind.serialize.kicad_sch import schematic_to_kicad_sch
 from coppermind.session import Session
 
@@ -22,11 +26,40 @@ def schematic_compose(session: Session) -> dict:
 
 
 def schematic_erc(session: Session) -> dict:
-    """Compose and run semantic checks plus KiCad CLI ERC when available."""
-    return evaluate_schematic(
+    """Compose, visually review and run semantic checks plus KiCad CLI ERC."""
+    return evaluate_visual_schematic(
         session.require_circuit(),
         session.require_schematic(),
         resolver=session.symbol_resolver,
+    )
+
+
+def schematic_visual_review(session: Session, include_svg: bool = False) -> dict:
+    """Review current composed schematic readability and KiCad SVG rendering."""
+    compose_schematic(session.require_circuit(), session.require_schematic())
+    return review_schematic_visual(
+        session.require_schematic(),
+        circuit=session.require_circuit(),
+        resolver=session.symbol_resolver,
+        include_svg=include_svg,
+    )
+
+
+def schematic_visual_optimize(
+    session: Session,
+    target_score: float = 85.0,
+    max_passes: int = 4,
+    include_svg: bool = False,
+) -> dict:
+    """Optimize schematic geometry only, preserving Circuit IR electrical intent."""
+    compose_schematic(session.require_circuit(), session.require_schematic())
+    return optimize_visual_layout(
+        session.require_circuit(),
+        session.require_schematic(),
+        resolver=session.symbol_resolver,
+        target_score=target_score,
+        max_passes=max_passes,
+        include_svg=include_svg,
     )
 
 
@@ -46,4 +79,10 @@ def schematic_export_composed(session: Session, path: str) -> dict:
     }
 
 
-COMPOSER_ROUTED_TOOLS = (schematic_compose, schematic_erc, schematic_export_composed)
+COMPOSER_ROUTED_TOOLS = (
+    schematic_compose,
+    schematic_erc,
+    schematic_visual_review,
+    schematic_visual_optimize,
+    schematic_export_composed,
+)
