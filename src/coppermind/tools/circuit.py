@@ -190,11 +190,10 @@ def connect_pins(session: Session, net: str, pins: list[str]) -> dict:
 
 def _incremental_geometry_nets(session: Session) -> set[str]:
     sch = session.require_schematic()
-    return {
-        item.net
-        for item in (*sch.wires, *sch.labels, *sch.junctions)
-        if item.net
-    }
+    nets = {wire.net for wire in sch.wires if wire.net}
+    nets.update(label.net for label in sch.labels if label.net)
+    nets.update(junction.net for junction in sch.junctions if junction.net)
+    return nets
 
 
 def component_place_relative(
