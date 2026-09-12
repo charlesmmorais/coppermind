@@ -29,7 +29,7 @@ class SchPin(BaseModel):
 
 
 class SheetInstance(BaseModel):
-    sheet: "Sheet"
+    sheet: Sheet
     port_map: dict[str, str] = {}
 
 
