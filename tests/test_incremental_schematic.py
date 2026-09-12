@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from coppermind.backends.memory_backend import MemoryBackend
 from coppermind.libraries import SymbolResolver
 from coppermind.schematic import incremental
@@ -89,6 +91,34 @@ def test_place_relative_moves_only_target_and_locks_it(tmp_path: Path):
     assert c1.y == r1.y
     assert session.require_circuit().components["C1"].properties["placement_locked"] == "true"
 
+    with pytest.raises(ValueError, match="placement is locked"):
+        component_place_relative(session, "C1", "R1", direction="below")
+
+
+def test_force_reposition_reroutes_only_impacted_net(tmp_path: Path):
+    session = _session(tmp_path)
+    project_create(session, "incremental", 100, 80)
+    component_add(session, "R1", "Device:R")
+    component_add(session, "C1", "Device:C")
+    component_place_relative(session, "C1", "R1", "right", 25.4)
+    create_net(session, "A")
+    connect_incremental(session, "A", ["R1.2", "C1.1"])
+
+    before = [wire.model_dump() for wire in session.require_schematic().wires]
+    moved = component_place_relative(
+        session,
+        "C1",
+        "R1",
+        direction="below",
+        gap_mm=25.4,
+        force=True,
+    )
+    after = [wire.model_dump() for wire in session.require_schematic().wires]
+
+    assert moved["rerouted_nets"] == ["A"]
+    assert before != after
+    assert {wire.net for wire in session.require_schematic().wires} == {"A"}
+
 
 def test_connect_incremental_reroutes_only_changed_net(tmp_path: Path):
     session = _session(tmp_path)
@@ -128,10 +158,7 @@ def test_checkpoint_blocks_semantic_net_that_was_not_incrementally_routed(tmp_pa
     assert result["validation"]["semantic_violations"][0]["type"] == "NET_NOT_INCREMENTALLY_ROUTED"
 
 
-def test_progressive_checkpoint_ignores_only_expected_unconnected_pin_erc(
-    tmp_path: Path,
-    monkeypatch,
-):
+def test_progressive_checkpoint_ignores_expected_incomplete_erc(tmp_path: Path, monkeypatch):
     session = _session(tmp_path)
     project_create(session, "incremental", 100, 80)
     component_add(session, "R1", "Device:R")
@@ -141,10 +168,8 @@ def test_progressive_checkpoint_ignores_only_expected_unconnected_pin_erc(
             "available": True,
             "blocking": True,
             "violations": [
-                {
-                    "severity": "error",
-                    "description": "Pin not connected",
-                }
+                {"severity": "error", "description": "Pin not connected"},
+                {"severity": "error", "description": "Power input pin is not driven"},
             ],
         }
 
@@ -153,8 +178,8 @@ def test_progressive_checkpoint_ignores_only_expected_unconnected_pin_erc(
 
     assert result["committed"] is True
     assert result["validation"]["blocking"] is False
-    violation = result["validation"]["kicad"]["violations"][0]
-    assert violation["progressive_ignored"] is True
+    violations = result["validation"]["kicad"]["violations"]
+    assert all(item["progressive_ignored"] is True for item in violations)
 
 
 def test_progressive_checkpoint_keeps_real_erc_error_blocking(tmp_path: Path, monkeypatch):
