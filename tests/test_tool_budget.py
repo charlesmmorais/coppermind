@@ -1,10 +1,4 @@
-"""Context economy as a tested invariant, not a slogan.
-
-The reference project advertised a "70% context reduction" router that was never
-actually active. Here we make the claim falsifiable: the always-visible set
-(core + discovery) must stay small and cheap, and the routed long tail must NOT
-be always-visible — it is reachable only via progressive discovery.
-"""
+"""Context economy and semantic authoring as tested invariants."""
 
 import inspect
 
@@ -34,7 +28,32 @@ def test_routed_tools_are_not_visible():
     visible = {fn.__name__ for fn in _visible()}
     routed = set(REGISTRY.names)
     assert visible.isdisjoint(routed)
-    assert len(routed) >= 5  # a real long tail exists behind discovery
+    assert len(routed) >= 5
+
+
+def test_semantic_circuit_tools_are_visible():
+    visible = {fn.__name__ for fn in _visible()}
+    assert {
+        "component_add",
+        "connect_pins",
+        "create_net",
+        "inspect_component",
+        "find_symbol",
+    } <= visible
+
+
+def test_raw_schematic_geometry_is_not_agent_callable():
+    visible = {fn.__name__ for fn in _visible()}
+    routed = set(REGISTRY.names)
+    assert "wire_add" not in visible | routed
+    assert "symbol_add" not in visible | routed
+
+
+def test_coordinate_pcb_tools_are_routed_compatibility_only():
+    visible = {fn.__name__ for fn in _visible()}
+    routed = set(REGISTRY.names)
+    assert {"component_place", "net_create", "net_route"}.isdisjoint(visible)
+    assert {"component_place", "net_create", "net_route"} <= routed
 
 
 def test_visible_schema_text_within_budget():
@@ -52,8 +71,21 @@ def test_every_visible_tool_is_documented():
         assert (fn.__doc__ or "").strip(), f"{fn.__name__} is missing a docstring"
 
 
-def test_tool_names_follow_resource_action_convention():
-    allowed = ("project_", "component_", "net_", "board_", "design_",
-               "list_", "get_", "search_", "execute_")
+def test_tool_names_follow_agent_verb_convention():
+    allowed = (
+        "project_",
+        "component_",
+        "net_",
+        "board_",
+        "design_",
+        "list_",
+        "get_",
+        "search_",
+        "execute_",
+        "create_",
+        "connect_",
+        "inspect_",
+        "find_",
+    )
     for fn in _visible():
         assert fn.__name__.startswith(allowed), f"{fn.__name__} breaks naming convention"
