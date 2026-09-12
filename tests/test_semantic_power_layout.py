@@ -85,8 +85,11 @@ def _divider(tmp_path: Path) -> Session:
 
 def test_power_bounded_passive_chain_is_compact_and_vertical(tmp_path: Path):
     session = _divider(tmp_path)
+    circuit_before = session.require_circuit().model_dump(mode="json")
+
     report = compose_schematic(session.require_circuit(), session.require_schematic())
     assert report.ok
+    assert session.require_circuit().model_dump(mode="json") == circuit_before
 
     schematic = session.require_schematic()
     symbols = {symbol.reference: symbol for symbol in schematic.symbols}
@@ -113,8 +116,15 @@ def test_power_bounded_passive_chain_is_compact_and_vertical(tmp_path: Path):
     assert top_flag is not None and bottom_flag is not None
     assert top_flag[1] == pytest.approx(top[1])
     assert bottom_flag[1] == pytest.approx(bottom[1])
-    assert abs(top_flag[0] - top[0]) == pytest.approx(25.4)
-    assert abs(bottom_flag[0] - bottom[0]) == pytest.approx(25.4)
+    assert abs(top_flag[0] - top[0]) == pytest.approx(15.24)
+    assert abs(bottom_flag[0] - bottom[0]) == pytest.approx(15.24)
+
+    horizontal_branches = sorted(
+        abs(wire.x2 - wire.x1)
+        for wire in schematic.wires
+        if wire.y1 == pytest.approx(wire.y2) and not pytest.approx(wire.x1) == wire.x2
+    )
+    assert horizontal_branches == pytest.approx([15.24, 15.24])
 
     # The rail symbols already name +5V/GND; only the signal net needs a label.
     assert [label.text for label in schematic.labels] == ["VOUT"]
@@ -127,7 +137,7 @@ def test_power_bounded_passive_chain_is_compact_and_vertical(tmp_path: Path):
 
     xs = [symbol.x for symbol in schematic.symbols]
     ys = [symbol.y for symbol in schematic.symbols]
-    assert max(xs) - min(xs) <= 30.48
+    assert max(xs) - min(xs) <= 20.32
     assert max(ys) - min(ys) <= 66.04
 
     visual = review_schematic_visual(
