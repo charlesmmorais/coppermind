@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid as _uuid
 
 from coppermind.libraries import SymbolResolver
+from coppermind.schematic.composer import symbol_pin_geometry
 from coppermind.schematic.models import (
     Schematic,
     SchLibraryDefinition,
@@ -56,8 +57,72 @@ def _resolved_library_symbols(
     return result
 
 
+def _two_pin_orientation(sym, library: SchLibrarySymbol) -> str | None:
+    """Infer the displayed axis of a two-pin symbol from its real pin geometry."""
+    pins = list(symbol_pin_geometry(library, sym.unit).values())
+    if len(pins) != 2:
+        return None
+    left, right = pins
+    dx = abs(left.x - right.x)
+    dy = abs(left.y - right.y)
+    if abs(dx - dy) < 1e-6:
+        return None
+    vertical = dy > dx
+    if int(round(sym.rotation / 90.0)) % 2:
+        vertical = not vertical
+    return "vertical" if vertical else "horizontal"
+
+
+def _field_layout(sym, library: SchLibrarySymbol) -> dict[str, tuple[float, float, float, bool, str | None]]:
+    """Place instance fields away from symbol bodies and hide KiCad special refs."""
+    token = sym.lib_id.lower()
+    is_power = token.startswith("power:")
+    hidden_reference = is_power or sym.reference.startswith("#")
+
+    if is_power:
+        value_y = sym.y + 3.81
+        if not any(name in token for name in ("gnd", "vss", "pwr_flag")):
+            value_y = sym.y - 3.81
+        return {
+            "Reference": (sym.x, sym.y - 2.54, 0.0, hidden_reference, None),
+            "Value": (sym.x, value_y, 0.0, False, None),
+        }
+
+    orientation = _two_pin_orientation(sym, library)
+    if orientation == "vertical":
+        field_x = sym.x + 3.81
+        return {
+            "Reference": (field_x, sym.y - 1.27, 0.0, hidden_reference, "left"),
+            "Value": (field_x, sym.y + 1.27, 0.0, False, "left"),
+        }
+
+    return {
+        "Reference": (sym.x, sym.y - 2.54, 0.0, hidden_reference, None),
+        "Value": (sym.x, sym.y + 2.54, 0.0, False, None),
+    }
+
+
+def _property(
+    name: str,
+    value: str,
+    x: float,
+    y: float,
+    rotation: float,
+    *,
+    hidden: bool = False,
+    justify: str | None = None,
+) -> str:
+    hidden_text = " (hide yes)" if hidden else ""
+    justify_text = f" (justify {justify})" if justify else ""
+    return (
+        f'  (property "{name}" "{value}" (at {_fmt(x)} {_fmt(y)} {_fmt(rotation)})'
+        f"{hidden_text} (effects (font (size 1.27 1.27)){justify_text}))"
+    )
+
+
 def _symbol_instance(sym, project: str, library: SchLibrarySymbol) -> str:
     x, y, rot = _fmt(sym.x), _fmt(sym.y), _fmt(sym.rotation)
+    fields = _field_layout(sym, library)
     lines: list[str] = []
     lines.append("(symbol")
     lines.append(f'  (lib_id "{sym.lib_id}")')
@@ -68,13 +133,29 @@ def _symbol_instance(sym, project: str, library: SchLibrarySymbol) -> str:
     lines.append("  (on_board yes)")
     lines.append("  (dnp no)")
     lines.append(f'  (uuid "{sym.uuid}")')
+    ref_x, ref_y, ref_rot, ref_hidden, ref_justify = fields["Reference"]
     lines.append(
-        f'  (property "Reference" "{sym.reference}" (at {x} {_fmt(sym.y - 2.54)} 0) '
-        "(effects (font (size 1.27 1.27))))"
+        _property(
+            "Reference",
+            sym.reference,
+            ref_x,
+            ref_y,
+            ref_rot,
+            hidden=ref_hidden,
+            justify=ref_justify,
+        )
     )
+    value_x, value_y, value_rot, value_hidden, value_justify = fields["Value"]
     lines.append(
-        f'  (property "Value" "{sym.value}" (at {x} {_fmt(sym.y + 2.54)} 0) '
-        "(effects (font (size 1.27 1.27))))"
+        _property(
+            "Value",
+            sym.value,
+            value_x,
+            value_y,
+            value_rot,
+            hidden=value_hidden,
+            justify=value_justify,
+        )
     )
     seen: set[str] = set()
     for pin in library.pins_for_unit(sym.unit):
