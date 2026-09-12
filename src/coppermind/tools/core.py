@@ -12,6 +12,7 @@ from coppermind.domain import operations as ops
 from coppermind.domain.models import Layer
 from coppermind.intelligence.critique import critique as run_critique
 from coppermind.schematic.models import Schematic
+from coppermind.schematic.visual_ai import apply_multimodal_review
 from coppermind.schematic.visual_review import evaluate_visual_schematic
 from coppermind.session import Session
 from coppermind.tools.circuit import CIRCUIT_TOOLS
@@ -81,12 +82,18 @@ def net_route(
 def _evaluate_semantic(session: Session) -> dict:
     circuit = session.require_circuit()
     schematic = session.require_schematic()
-    return evaluate_visual_schematic(
+    pipeline = evaluate_visual_schematic(
         circuit,
         schematic,
         resolver=session.symbol_resolver,
         target_score=85.0,
         max_passes=4,
+    )
+    return apply_multimodal_review(
+        pipeline,
+        circuit,
+        schematic,
+        resolver=session.symbol_resolver,
     )
 
 
