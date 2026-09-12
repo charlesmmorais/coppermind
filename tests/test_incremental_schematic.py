@@ -7,14 +7,15 @@ from coppermind.libraries import SymbolResolver
 from coppermind.session import Session
 from coppermind.tools.circuit import (
     component_add,
+    component_place_relative,
     connect_incremental,
     connect_pins,
     create_net,
-    place_relative,
     schematic_checkpoint,
     schematic_export_current,
 )
 from coppermind.tools.core import project_create
+from coppermind.tools.registry import REGISTRY
 
 
 DEVICE_LIB = r'''(kicad_symbol_lib
@@ -54,6 +55,14 @@ def _session(tmp_path: Path) -> Session:
     )
 
 
+def test_incremental_tools_are_routed_not_always_visible():
+    assert "component_place_relative" in REGISTRY.names
+    assert "component_freeze_placement" in REGISTRY.names
+    assert "connect_incremental" in REGISTRY.names
+    assert "schematic_checkpoint" in REGISTRY.names
+    assert "schematic_export_current" in REGISTRY.names
+
+
 def test_place_relative_moves_only_target_and_locks_it(tmp_path: Path):
     session = _session(tmp_path)
     project_create(session, "incremental", 100, 80)
@@ -65,7 +74,13 @@ def test_place_relative_moves_only_target_and_locks_it(tmp_path: Path):
     c1 = next(item for item in sch.symbols if item.reference == "C1")
     r1_before = (r1.x, r1.y)
 
-    result = place_relative(session, "C1", "R1", direction="right", gap_mm=25.4)
+    result = component_place_relative(
+        session,
+        "C1",
+        "R1",
+        direction="right",
+        gap_mm=25.4,
+    )
 
     assert result["locked"] is True
     assert (r1.x, r1.y) == r1_before
@@ -80,8 +95,8 @@ def test_connect_incremental_reroutes_only_changed_net(tmp_path: Path):
     component_add(session, "R1", "Device:R")
     component_add(session, "C1", "Device:C")
     component_add(session, "R2", "Device:R")
-    place_relative(session, "C1", "R1", "right", 25.4)
-    place_relative(session, "R2", "C1", "below", 25.4)
+    component_place_relative(session, "C1", "R1", "right", 25.4)
+    component_place_relative(session, "R2", "C1", "below", 25.4)
 
     create_net(session, "A")
     create_net(session, "B")
@@ -117,7 +132,7 @@ def test_checkpoint_and_export_current_without_global_compose(tmp_path: Path):
     project_create(session, "incremental", 100, 80)
     component_add(session, "R1", "Device:R")
     component_add(session, "C1", "Device:C")
-    place_relative(session, "C1", "R1", "right", 25.4)
+    component_place_relative(session, "C1", "R1", "right", 25.4)
     create_net(session, "SENSE")
     connect_incremental(session, "SENSE", ["R1.2", "C1.1"])
 
