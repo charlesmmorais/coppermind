@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from coppermind.server import ServerOptions, parse_server_options, run_server
+from coppermind.server import ServerOptions, build_server, parse_server_options, run_server
 
 
 class FakeServer:
@@ -48,6 +48,24 @@ def test_server_options_support_http_environment(monkeypatch: pytest.MonkeyPatch
     assert options.endpoint == "http://localhost:9001/custom/mcp"
 
 
+def test_build_server_configures_fastmcp_v1_http_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COPPERMIND_BACKEND", "memory")
+    options = ServerOptions(
+        transport="streamable-http",
+        host="127.0.0.1",
+        port=9002,
+        path="/custom-mcp",
+    )
+
+    server = build_server(options)
+
+    assert server.settings.host == "127.0.0.1"
+    assert server.settings.port == 9002
+    assert server.settings.streamable_http_path == "/custom-mcp"
+
+
 def test_stdio_dispatches_without_http_options() -> None:
     server = FakeServer()
 
@@ -56,7 +74,7 @@ def test_stdio_dispatches_without_http_options() -> None:
     assert server.calls == [("stdio", {})]
 
 
-def test_streamable_http_dispatches_expected_bind_options() -> None:
+def test_streamable_http_dispatches_v1_transport_only() -> None:
     server = FakeServer()
     options = ServerOptions(
         transport="streamable-http",
@@ -67,16 +85,7 @@ def test_streamable_http_dispatches_expected_bind_options() -> None:
 
     run_server(options, server)
 
-    assert server.calls == [
-        (
-            "streamable-http",
-            {
-                "host": "127.0.0.1",
-                "port": 8765,
-                "streamable_http_path": "/mcp",
-            },
-        )
-    ]
+    assert server.calls == [("streamable-http", {})]
 
 
 def test_streamable_http_accepts_ipv6_loopback() -> None:
@@ -86,10 +95,10 @@ def test_streamable_http_accepts_ipv6_loopback() -> None:
     run_server(options, server)
 
     assert options.endpoint == "http://[::1]:8765/mcp"
-    assert server.calls[0][1]["host"] == "::1"
+    assert server.calls == [("streamable-http", {})]
 
 
-def test_streamable_http_rejects_non_loopback() -> None:
+def test_streamable_http_rejects_non_loopback_before_server_build() -> None:
     server = FakeServer()
     options = ServerOptions(transport="streamable-http", host="0.0.0.0")
 
