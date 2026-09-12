@@ -53,7 +53,7 @@ _ENV_RE = re.compile(r"\$\{([^}]+)\}")
 def _unquote(token: str) -> str:
     if len(token) >= 2 and token[0] == token[-1] == '"':
         body = token[1:-1]
-        return body.replace(r'\"', '"').replace(r"\\", "\")
+        return body.replace(r'\"', '"').replace("\\\\", "\\")
     return token
 
 
@@ -224,7 +224,10 @@ def _expand_env_path(value: str, project_dir: Path | None) -> Path:
             return str(project_dir)
         return os.environ.get(key, match.group(0))
 
-    return Path(os.path.expanduser(_ENV_RE.sub(repl, value)))
+    expanded = Path(os.path.expanduser(_ENV_RE.sub(repl, value)))
+    if not expanded.is_absolute() and project_dir is not None:
+        return project_dir / expanded
+    return expanded
 
 
 def _default_search_paths() -> list[Path]:
@@ -307,7 +310,8 @@ class SymbolResolver:
         self._cache: dict[str, ResolvedSymbol] = {}
         self._project_libraries = (
             _table_libraries(self.project_dir / "sym-lib-table", self.project_dir)
-            if self.project_dir else {}
+            if self.project_dir
+            else {}
         )
 
     def _library_source(self, library: str) -> Path:
@@ -380,7 +384,7 @@ class SymbolResolver:
         if parent_name:
             parent = self._resolve(library, parent_name, source, stack + [lib_id])
             merged: dict[tuple[str, int], Pin] = {
-                (p.number, p.unit): p for p in parent.pins
+                (pin.number, pin.unit): pin for pin in parent.pins
             }
             for pin in pins:
                 merged[(pin.number, pin.unit)] = pin
