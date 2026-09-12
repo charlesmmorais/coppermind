@@ -303,7 +303,8 @@ def review_schematic_visual(
         if run_render
         else {"available": False, "pages": [], "error": "disabled"}
     )
-    raw_pages = list(render.pop("_raw_pages", []))
+    raw_value = render.pop("_raw_pages", [])
+    raw_pages = [str(item) for item in raw_value] if isinstance(raw_value, list) else []
     if render.get("available") and render.get("error"):
         findings.append(
             VisualFinding("SVG_RENDER_FAILED", "error", str(render["error"]), 25.0)
