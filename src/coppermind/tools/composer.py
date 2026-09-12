@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from coppermind.safety import validate_output_path
 from coppermind.schematic.composer import compose_schematic
+from coppermind.schematic.erc import evaluate_schematic
 from coppermind.schematic.layout_actions import (
     LayoutAction,
     LayoutPlan,
@@ -200,11 +201,42 @@ def schematic_visual_autofix(
     )
 
 
-def schematic_export_composed(session: Session, path: str) -> dict:
-    """Compose Circuit IR and export the resulting real KiCad .kicad_sch file."""
-    report = compose_schematic(session.require_circuit(), session.require_schematic())
-    if not report.ok:
-        return {"ok": False, "composition": report.as_dict()}
+def schematic_export_composed(
+    session: Session,
+    path: str,
+    allow_invalid: bool = False,
+    run_external: bool = True,
+) -> dict:
+    """Validate, compose and export a real KiCad .kicad_sch file.
+
+    Blocking semantic/ERC failures prevent export by default.  ``allow_invalid``
+    is an explicit escape hatch for diagnostics only; unresolved composition is
+    never exported because its electrical geometry is incomplete.
+    """
+    pipeline = evaluate_schematic(
+        session.require_circuit(),
+        session.require_schematic(),
+        resolver=session.symbol_resolver,
+        run_external=run_external,
+    )
+    composition = pipeline["composition"]
+    if not composition.get("ok"):
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": "schematic composition has unresolved pin geometry",
+            "composition": composition,
+            "pipeline": pipeline,
+        }
+    if pipeline.get("blocking") and not allow_invalid:
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": "schematic export blocked by semantic/ERC validation",
+            "composition": composition,
+            "pipeline": pipeline,
+        }
+
     output = validate_output_path(path, {".kicad_sch"})
     text = schematic_to_kicad_sch(session.require_schematic(), session.symbol_resolver)
     Path(output).write_text(text, encoding="utf-8")
@@ -212,7 +244,10 @@ def schematic_export_composed(session: Session, path: str) -> dict:
         "ok": True,
         "exported": output,
         "bytes": len(text.encode("utf-8")),
-        "composition": report.as_dict(),
+        "validated": not bool(pipeline.get("blocking")),
+        "allow_invalid": allow_invalid,
+        "composition": composition,
+        "pipeline": pipeline,
     }
 
 
