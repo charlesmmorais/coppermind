@@ -26,7 +26,7 @@ Improve schematic readability without changing Circuit IR or electrical connecti
    - Avoid unnecessary whitespace while retaining enough room for fields and branches.
 
 5. **Safety gates**
-   - Circuit IR must remain byte-for-byte equivalent before/after geometry optimization.
+   - Circuit IR must remain equivalent before/after geometry optimization.
    - KiCad ERC must remain non-blocking.
    - Existing anchor regression tests must continue to pass.
    - Visual review score must not regress.
@@ -47,4 +47,6 @@ PWR_FLAG -- rail -- R1 10k
 PWR_FLAG -- rail -- GND
 ```
 
-The first implementation step in this PR is to shorten the two `PWR_FLAG` branches while preserving the layout and ERC behavior already validated in KiCad 10.
+## Implemented in PR #9
+
+The first polish step is now implemented: both `PWR_FLAG` pins are placed **15.24 mm** from the functional rail, on the same Y coordinate. The router therefore produces two 15.24 mm horizontal flag branches instead of 25.4 mm branches. Regression coverage also snapshots the Circuit IR before composition and verifies it is unchanged afterward.
