@@ -149,7 +149,8 @@ class _PositionAwareReviewer:
         ux, uy = positions["U1"]
         cx, cy = positions["C1"]
         distance = ((ux - cx) ** 2 + (uy - cy) ** 2) ** 0.5
-        if distance <= 30:
+        penalty = min(6.0, max(0.0, (distance - 25.4) / 10.0))
+        if penalty <= 0.05:
             return {
                 "provider": self.name,
                 "model": self.model,
@@ -166,7 +167,7 @@ class _PositionAwareReviewer:
                     "code": "AI_DECOUPLING_PROXIMITY",
                     "severity": "warning",
                     "message": "C1 is visually far from U1",
-                    "penalty": 6.0,
+                    "penalty": penalty,
                     "refs": ["C1", "U1"],
                     "suggestion": "move C1 closer",
                     "confidence": 0.95,
@@ -179,12 +180,14 @@ class _PositionAwareReviewer:
                     },
                 }
             ],
-            "penalty": 6.0,
+            "penalty": penalty,
         }
 
 
 def test_autofix_accepts_only_improving_candidate_and_preserves_ir(monkeypatch):
     circuit, schematic = _design()
+    del circuit.components["R1"]
+    schematic.symbols = [item for item in schematic.symbols if item.reference != "R1"]
     before = circuit.model_dump(mode="json")
     monkeypatch.setattr(
         "coppermind.schematic.visual_ai.render_schematic_pdf",
