@@ -271,18 +271,29 @@ def _route_net(name: str, endpoints: list[tuple[float, float]]) -> tuple[list[Wi
     seen: set = set()
     for x, y in points:
         _append_wire(wires, seen, (x, y), (trunk_x, y))
-    min_y = min(y for _, y in points)
-    max_y = max(y for _, y in points)
-    _append_wire(wires, seen, (trunk_x, min_y), (trunk_x, max_y))
+
+    # A pin that lands on the middle of one long trunk segment is only a
+    # geometric crossing to KiCad; it is not necessarily an electrical node.
+    # Split the trunk at every endpoint Y so each collinear pin is a real wire
+    # endpoint, then add a junction whenever three or more electrical legs meet.
+    ys = sorted({y for _, y in points})
+    for y0, y1 in zip(ys, ys[1:]):
+        _append_wire(wires, seen, (trunk_x, y0), (trunk_x, y1))
 
     junctions: list[Junction] = []
     if len(points) > 2:
-        for y in sorted({y for _, y in points}):
-            branches = sum(1 for x, py in points if py == y and not math.isclose(x, trunk_x))
-            vertical = min_y < y < max_y
-            if branches + int(vertical) >= 2:
+        min_y, max_y = ys[0], ys[-1]
+        for y in ys:
+            branches = sum(
+                1 for x, py in points if py == y and not math.isclose(x, trunk_x)
+            )
+            on_trunk = sum(
+                1 for x, py in points if py == y and math.isclose(x, trunk_x)
+            )
+            vertical_sides = int(y > min_y) + int(y < max_y)
+            if branches + on_trunk + vertical_sides >= 3:
                 junctions.append(Junction(x=trunk_x, y=y))
-    return wires, NetLabel(text=name, x=trunk_x, y=min_y), junctions
+    return wires, NetLabel(text=name, x=trunk_x, y=ys[0]), junctions
 
 
 def compose_schematic(circuit: Circuit, schematic: Schematic) -> ComposeReport:
