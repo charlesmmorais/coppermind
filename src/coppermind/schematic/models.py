@@ -58,8 +58,20 @@ class SchLibrarySymbol(BaseModel):
     definitions: list[SchLibraryDefinition] = Field(default_factory=list)
 
     def pins_for_unit(self, unit: int) -> list[Pin]:
-        selected = [p for p in self.pins if p.unit == unit]
-        return selected or self.pins
+        """Return pins visible in a KiCad unit, including common unit-0 pins.
+
+        KiCad uses unit ``0`` for geometry/pins shared by all displayed units.
+        A drawable symbol instance is still placed as unit 1..N; unit 0 is not
+        itself an instance selector.
+        """
+        selected: dict[str, Pin] = {}
+        for pin in self.pins:
+            if pin.unit not in (0, unit):
+                continue
+            current = selected.get(pin.number)
+            if current is None or (current.unit == 0 and pin.unit == unit):
+                selected[pin.number] = pin
+        return list(selected.values())
 
 
 class SchSymbol(BaseModel):
