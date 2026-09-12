@@ -4,14 +4,14 @@ The same Coppermind server can be exposed in two ways:
 
 * ``stdio`` — local subprocess transport, ideal for Claude Desktop/Code and other
   local MCP hosts;
-* ``streamable-http`` — HTTP transport, ideal for MCP tunnels/gateways and
-  remote-capable clients such as ChatGPT workspaces that can connect to a custom
-  MCP server.
+* ``streamable-http`` — loopback HTTP transport, ideal for a trusted MCP tunnel
+  or gateway used by a remote-capable client such as ChatGPT.
 
-The HTTP transport is deliberately loopback-only by default.  Coppermind keeps
-one in-process design session, so a directly exposed multi-user HTTP deployment
-would mix project state between clients.  Use a trusted authenticated tunnel or
-proxy if the client is not on the same machine.
+The HTTP transport is deliberately loopback-only. Coppermind keeps one
+in-process design session, so directly exposing the process to a network would
+mix project state between clients and would provide no application-level auth.
+Put authentication/tunnelling in front of the localhost endpoint instead of
+binding Coppermind itself to a public interface.
 """
 
 from __future__ import annotations
@@ -41,7 +41,6 @@ class ServerOptions:
     host: str = "127.0.0.1"
     port: int = 8765
     path: str = "/mcp"
-    allow_remote_http: bool = False
     log_level: str = "INFO"
 
     @property
@@ -50,13 +49,6 @@ class ServerOptions:
             return None
         host = f"[{self.host}]" if ":" in self.host and not self.host.startswith("[") else self.host
         return f"http://{host}:{self.port}{self.path}"
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _env_port(name: str, default: int) -> int:
@@ -109,7 +101,7 @@ def parse_server_options(argv: Sequence[str] | None = None) -> ServerOptions:
     parser.add_argument(
         "--host",
         default=os.getenv("COPPERMIND_HTTP_HOST", "127.0.0.1"),
-        help="Streamable HTTP bind host (default: 127.0.0.1)",
+        help="Streamable HTTP loopback bind host (default: 127.0.0.1)",
     )
     parser.add_argument(
         "--port",
@@ -121,15 +113,6 @@ def parse_server_options(argv: Sequence[str] | None = None) -> ServerOptions:
         "--path",
         default=os.getenv("COPPERMIND_HTTP_PATH", "/mcp"),
         help="Streamable HTTP MCP path (default: /mcp)",
-    )
-    parser.add_argument(
-        "--allow-remote-http",
-        action="store_true",
-        default=_env_bool("COPPERMIND_ALLOW_REMOTE_HTTP", False),
-        help=(
-            "allow binding Streamable HTTP to a non-loopback host; unsafe without "
-            "an authenticated trusted proxy/tunnel"
-        ),
     )
     parser.add_argument(
         "--log-level",
@@ -146,7 +129,6 @@ def parse_server_options(argv: Sequence[str] | None = None) -> ServerOptions:
         host=args.host.strip(),
         port=args.port,
         path=_normalize_path(args.path),
-        allow_remote_http=args.allow_remote_http,
         log_level=args.log_level,
     )
 
@@ -207,16 +189,16 @@ def run_server(options: ServerOptions, server: Any | None = None) -> None:
         mcp.run(transport="stdio")
         return
 
-    if not _is_loopback_host(options.host) and not options.allow_remote_http:
+    if not _is_loopback_host(options.host):
         raise ValueError(
-            "Refusing to expose Coppermind Streamable HTTP on a non-loopback host. "
-            "Bind to 127.0.0.1/localhost and use a trusted MCP tunnel, or pass "
-            "--allow-remote-http only behind an authenticated trusted proxy."
+            "Coppermind Streamable HTTP is loopback-only. Bind to 127.0.0.1, "
+            "localhost or ::1 and place a trusted authenticated MCP tunnel/proxy "
+            "in front of it when a remote client must connect."
         )
 
     logger.info("MCP transport: Streamable HTTP at %s", options.endpoint)
     logger.warning(
-        "Streamable HTTP currently shares one Coppermind design session per process; "
+        "Streamable HTTP shares one Coppermind design session per process; "
         "treat this endpoint as a single-user service."
     )
     mcp.run(
