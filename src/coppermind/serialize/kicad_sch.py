@@ -10,9 +10,9 @@ import uuid as _uuid
 
 from coppermind.libraries import SymbolResolver
 from coppermind.schematic.models import (
+    Schematic,
     SchLibraryDefinition,
     SchLibrarySymbol,
-    Schematic,
 )
 
 _VERSION = "20231120"  # KiCad 8 format; KiCad 9/10 open and upgrade it.
