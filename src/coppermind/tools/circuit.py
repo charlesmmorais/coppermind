@@ -104,6 +104,7 @@ def component_add(
             }
             for pin in resolved.pins
         ],
+        "pending_commit": True,
     }
 
 
@@ -113,7 +114,7 @@ def create_net(session: Session, name: str, net_class: str | None = None) -> dic
     if name in circuit.nets:
         raise ValueError(f"net '{name}' already exists")
     circuit.nets[name] = Net(name=name, net_class=net_class)
-    return {"ok": True, "net": name, "net_class": net_class}
+    return {"ok": True, "net": name, "net_class": net_class, "pending_commit": True}
 
 
 def _parse_pin_ref(value: str) -> tuple[str, str]:
@@ -162,6 +163,7 @@ def connect_pins(session: Session, net: str, pins: list[str]) -> dict:
         "ok": True,
         "net": net,
         "pins": [ref.key() for ref in circuit.nets[net].nodes],
+        "pending_commit": True,
     }
 
 
