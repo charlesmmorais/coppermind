@@ -16,6 +16,9 @@ from coppermind.circuit import Circuit
 from coppermind.libraries import SymbolResolver
 from coppermind.schematic import incremental_core as _core
 from coppermind.schematic.models import Junction, NetLabel, Schematic, Wire
+from coppermind.schematic.composer import symbol_pin_geometry, symbol_sheet_offset
+from coppermind.schematic.symbol_geometry import Box, symbol_graphic_box, wire_hits_body
+from coppermind.serialize.kicad_sch import label_clearance_violations
 
 _EPS = _core._EPS
 _GRID = _core._GRID
@@ -84,7 +87,10 @@ def _route_collides(
     wires: list[Wire],
     foreign_wires: list[Wire],
     foreign_points: list[tuple[float, float]] | None = None,
+    body_boxes: list[Box] | None = None,
 ) -> bool:
+    if any(wire_hits_body(wire, box) for wire in wires for box in body_boxes or []):
+        return True
     if any(
         _foreign_wire_contact_is_blocking(candidate, foreign)
         for candidate in wires
@@ -100,6 +106,8 @@ def _route_incremental_geometry(
     endpoints: list[tuple[float, float]],
     foreign_wires: list[Wire],
     foreign_points: list[tuple[float, float]] | None = None,
+    body_boxes: list[Box] | None = None,
+    escape_directions: dict[tuple[float, float], tuple[float, float]] | None = None,
 ) -> tuple[list[Wire], NetLabel, list[Junction]]:
     """Route one net while allowing safe graphical crossings of foreign nets."""
     points = sorted(set((_core._coord(x), _core._coord(y)) for x, y in endpoints))
@@ -112,15 +120,42 @@ def _route_incremental_geometry(
     candidates: list[tuple[list[Wire], NetLabel, list[Junction]]] = []
     for trunk_x in _core._candidate_trunk_xs(points):
         candidate = _core._build_trunk_route(name, points, trunk_x)
-        if not _route_collides(candidate[0], foreign_wires, foreign_points):
+        if not _route_collides(candidate[0], foreign_wires, foreign_points, body_boxes):
             candidates.append(candidate)
     for trunk_y in _core._candidate_trunk_ys(points):
         candidate = _core._build_horizontal_trunk_route(name, points, trunk_y)
-        if not _route_collides(candidate[0], foreign_wires, foreign_points):
+        if not _route_collides(candidate[0], foreign_wires, foreign_points, body_boxes):
             candidates.append(candidate)
     for candidate in _core._two_point_dogleg_candidates(name, points, foreign_wires, []):
-        if not _route_collides(candidate[0], foreign_wires, foreign_points):
+        if not _route_collides(candidate[0], foreign_wires, foreign_points, body_boxes):
             candidates.append(candidate)
+
+    # Some nets have facing pins at different heights: no single trunk can
+    # reach them without passing through a body. Extend each anchor *outward*
+    # along its real pin axis, then evaluate the existing trunk families.
+    # Bounded local escape lengths; accepted symbols and foreign wires never move.
+    if not candidates and escape_directions:
+        for distance in (_GRID, 2 * _GRID, 4 * _GRID):
+            escaped = []
+            stubs: list[Wire] = []
+            seen: set = set()
+            for point in points:
+                dx, dy = escape_directions.get(point, (0.0, 0.0))
+                end = (
+                    _core._coord(point[0] + distance * dx),
+                    _core._coord(point[1] + distance * dy),
+                )
+                escaped.append(end)
+                _append_wire(stubs, seen, point, end, name)
+            for build, lanes in (
+                (_build_trunk_route, _candidate_trunk_xs(escaped)),
+                (_build_horizontal_trunk_route, _candidate_trunk_ys(escaped)),
+            ):
+                for lane in lanes:
+                    wires, label, junctions = build(name, escaped, lane)
+                    combined = stubs + wires
+                    if not _route_collides(combined, foreign_wires, foreign_points, body_boxes):
+                        candidates.append((combined, label, junctions))
 
     if candidates:
         return min(
@@ -129,7 +164,7 @@ def _route_incremental_geometry(
         )
     raise RuntimeError(
         f"cannot route net '{name}' without an unsafe foreign-net contact or protected "
-        "electrical point; reposition a component or increase placement clearance"
+        "electrical point or symbol body; reposition a component or increase placement clearance"
     )
 
 
@@ -174,8 +209,20 @@ def route_net_incremental(circuit: Circuit, schematic: Schematic, net_name: str)
 
     foreign_wires = [wire for wire in schematic.wires if wire.net and wire.net != net_name]
     foreign_points = _foreign_pin_points_for_net(circuit, schematic, net_name)
+    body_boxes = list(_body_boxes(schematic).values())
+    escape_directions = {}
+    for node in net.nodes:
+        symbol = _core._symbol_by_ref(schematic, node.component)
+        library = schematic.library_symbols[symbol.lib_id]
+        pin = symbol_pin_geometry(library, symbol.unit)[node.pin]
+        angle = math.radians(pin.rotation)
+        anchor = _core._pin_anchor(schematic, node.component, node.pin)
+        assert anchor is not None  # all missing anchors were rejected above
+        escape_directions[anchor] = symbol_sheet_offset(
+            -math.cos(angle), -math.sin(angle), symbol.rotation
+        )
     wires, label, junctions = _route_incremental_geometry(
-        net_name, endpoints, foreign_wires, foreign_points
+        net_name, endpoints, foreign_wires, foreign_points, body_boxes, escape_directions
     )
 
     schematic.wires = [wire for wire in schematic.wires if wire.net != net_name]
@@ -226,6 +273,31 @@ def _foreign_net_intersections(schematic: Schematic) -> list[tuple[str, str]]:
     return sorted(intersections)
 
 
+def _body_boxes(schematic: Schematic) -> dict[str, Box]:
+    result = {}
+    for symbol in schematic.symbols:
+        # Zero-length power pins coincide with their net glyph; that glyph is
+        # intentionally part of the electrical connection, not a device body.
+        if symbol.lib_id.lower().startswith("power:"):
+            continue
+        library = schematic.library_symbols.get(symbol.lib_id)
+        box = symbol_graphic_box(symbol, library) if library else None
+        if box is not None:
+            result[symbol.reference] = box
+    return result
+
+
+def _body_contacts(schematic: Schematic) -> list[tuple[str, str]]:
+    return sorted(
+        {
+            (wire.net, reference)
+            for reference, box in _body_boxes(schematic).items()
+            for wire in schematic.wires
+            if wire_hits_body(wire, box)
+        }
+    )
+
+
 def _incremental_semantic_violations(circuit: Circuit, schematic: Schematic) -> list[dict]:
     violations = [
         {"severity": "error", "type": "INVALID_REFERENCE", "description": message}
@@ -262,6 +334,14 @@ def _incremental_semantic_violations(circuit: Circuit, schematic: Schematic) -> 
                 ),
             }
         )
+    for net_name, reference in _body_contacts(schematic):
+        violations.append(
+            {
+                "severity": "error",
+                "type": "WIRE_SYMBOL_BODY_CONTACT",
+                "description": f"net '{net_name}' crosses body '{reference}'",
+            }
+        )
     return violations
 
 
@@ -274,7 +354,8 @@ def validate_incremental_schematic(
 ) -> dict:
     """Validate current incremental geometry without invoking global composition."""
     semantic = _incremental_semantic_violations(circuit, schematic)
-    semantic_blocking = bool(semantic)
+    visual = label_clearance_violations(schematic)
+    semantic_blocking = bool(semantic or visual)
     if run_external and not semantic_blocking:
         kicad = _core.run_kicad_erc(schematic, resolver)
         if allow_incomplete:
@@ -292,6 +373,7 @@ def validate_incremental_schematic(
         "mode": "incremental",
         "allow_incomplete": allow_incomplete,
         "semantic_violations": semantic,
+        "visual_violations": visual,
         "kicad": kicad,
         "blocking": semantic_blocking or bool(kicad.get("blocking")),
     }

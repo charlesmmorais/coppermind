@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from coppermind.libraries import SymbolResolver
 from coppermind.schematic.composer import symbol_pin_geometry, symbol_sheet_offset
+from coppermind.schematic.symbol_geometry import symbol_graphic_box
 from coppermind.schematic.models import (
     Schematic,
     SchLibraryDefinition,
@@ -228,11 +229,20 @@ def _symbol_body_box(sym, library: SchLibrarySymbol) -> Box:
     xs = [point[0] for point in points]
     ys = [point[1] for point in points]
     margin = 1.27
-    return (
+    pin_box = (
         min(xs) - margin,
         min(ys) - margin,
         max(xs) + margin,
         max(ys) + margin,
+    )
+    graphic = symbol_graphic_box(sym, library)
+    if graphic is None:
+        return pin_box
+    return (
+        min(pin_box[0], graphic[0]),
+        min(pin_box[1], graphic[1]),
+        max(pin_box[2], graphic[2]),
+        max(pin_box[3], graphic[3]),
     )
 
 
@@ -278,7 +288,10 @@ def _wires_connected(left, right) -> bool:
 def _label_network(sch: Schematic, label) -> set[int]:
     """Return the connected wire component carrying a label's current anchor."""
     seeds = {
-        index for index, wire in enumerate(sch.wires) if _point_on_wire(label.x, label.y, wire)
+        index
+        for index, wire in enumerate(sch.wires)
+        if (not label.net or not wire.net or wire.net == label.net)
+        and _point_on_wire(label.x, label.y, wire)
     }
     if not seeds:
         return set()
@@ -290,6 +303,8 @@ def _label_network(sch: Schematic, label) -> set[int]:
         current = sch.wires[index]
         for other_index, other in enumerate(sch.wires):
             if other_index in network:
+                continue
+            if label.net and other.net and other.net != label.net:
                 continue
             if _wires_connected(current, other):
                 network.add(other_index)
@@ -343,9 +358,7 @@ def _label_score(
             penalty += 50.0
 
     for junction in sch.junctions:
-        if _point_in_box(junction.x, junction.y, box) and not (
-            math.isclose(junction.x, placement.x) and math.isclose(junction.y, placement.y)
-        ):
+        if _point_in_box(junction.x, junction.y, box):
             penalty += 30.0
 
     distance = math.hypot(placement.x - label.x, placement.y - label.y)
@@ -403,6 +416,31 @@ def _label_layouts(
         occupied.append(_text_box(label.text, placement.x, placement.y, placement.justify))
 
     return result
+
+
+def label_clearance_violations(sch: Schematic) -> list[dict]:
+    """Validate the label positions that serialization will actually emit."""
+    libraries = _resolved_library_symbols(sch, None)
+    placements = _label_layouts(sch, libraries)
+    fields = _field_boxes(sch, libraries)
+    bodies = [_symbol_body_box(sym, libraries[sym.lib_id]) for sym in sch.symbols]
+    occupied: list[Box] = []
+    violations = []
+    for label in sch.labels:
+        placement = placements[label.uuid]
+        score = _label_score(
+            sch, label, placement, _label_network(sch, label), fields, bodies, occupied
+        )[0]
+        if score:
+            violations.append(
+                {
+                    "severity": "error",
+                    "type": "LABEL_CLEARANCE_COLLISION",
+                    "description": f"label '{label.text}' has no clear candidate on its net",
+                }
+            )
+        occupied.append(_text_box(label.text, placement.x, placement.y, placement.justify))
+    return violations
 
 
 def _property(

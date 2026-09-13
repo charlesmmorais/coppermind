@@ -127,7 +127,11 @@ def test_exact_mcp_flow_demo_passes_strict_erc_and_netlist(tmp_path: Path):
     assert spec is not None and spec.loader is not None
     demo = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(demo)
-    output = tmp_path / "flow_orientation_demo.kicad_sch"
+    output = (
+        Path(os.environ.get("COPPERMIND_VISUAL_ARTIFACTS", str(tmp_path)))
+        / "flow_orientation_demo.kicad_sch"
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
 
     async def run():
         server = StdioServerParameters(
@@ -163,6 +167,36 @@ def test_exact_mcp_flow_demo_passes_strict_erc_and_netlist(tmp_path: Path):
     assert {placements[r][1] for r in ("R1", "R2", "R3")} == {placements["R1"][1]}
     assert all(placements[r][2] == 90 for r in ("R1", "R2", "R3"))
     _assert_rendered_fields_are_horizontal(output, {"R1", "R2", "R3", "10k", "22k", "47k"})
+
+
+def _assert_resistor_bodies_clear_of_wires(path: Path):
+    # Independent bounds of the real rectangular Device:R body; no production
+    # collision helper here, so deleting the router's obstacle check fails CI.
+    root = _parse_sexpr(path.read_text())
+    wires, bodies = [], []
+    for node in root:
+        if not isinstance(node, list) or not node:
+            continue
+        if node[0] == "wire":
+            a, b = _child(node, "pts")[1:]
+            wires.append(tuple(float(v) for v in (*a[1:], *b[1:])))
+        if node[0] == "symbol" and _child(node, "lib_id")[1] == "Device:R":
+            x, y, angle = map(float, _child(node, "at")[1:])
+            dx, dy = (2.54, 1.016) if angle % 180 else (1.016, 2.54)
+            bodies.append((x - dx, y - dy, x + dx, y + dy))
+    assert bodies
+    for left, top, right, bottom in bodies:
+        for x1, y1, x2, y2 in wires:
+            if y1 == y2:
+                assert not (top <= y1 <= bottom and max(x1, x2) > left and min(x1, x2) < right), (
+                    path,
+                    (x1, y1, x2, y2),
+                )
+            else:
+                assert not (left <= x1 <= right and max(y1, y2) > top and min(y1, y2) < bottom), (
+                    path,
+                    (x1, y1, x2, y2),
+                )
 
 
 def test_visual_divider_and_dense_mcp_cases(tmp_path: Path, monkeypatch):
@@ -201,10 +235,12 @@ def test_visual_divider_and_dense_mcp_cases(tmp_path: Path, monkeypatch):
     }
     for case in ("divider", "dense"):
         assert report[case]["validation"]["blocking"] is False
+        assert report[case]["validation"]["visual_violations"] == []
         assert report[case]["validation"]["kicad"]["available"] is True
         for stage in ("before", "after"):
             path = output / f"{case}_{stage}.kicad_sch"
             assert _exported_pin_sets(path) == expected[case]
+            _assert_resistor_bodies_clear_of_wires(path)
             references = set(report[case][stage]["symbols"])
             _assert_rendered_fields_are_horizontal(path, references)
     for result in report["divider"]["orientations"].values():
