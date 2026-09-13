@@ -108,6 +108,10 @@ def _field_layout(
     token = sym.lib_id.lower()
     is_power = token.startswith("power:")
     hidden_reference = is_power or sym.reference.startswith("#")
+    # KiCad SCH_FIELD::GetDrawRotation toggles the field axis for quarter-
+    # turned parents. Store a vertical local field to render horizontal on
+    # the sheet; 180-degree parents retain the horizontal text axis.
+    field_rotation = 90.0 if int(round(sym.rotation / 90.0)) % 2 else 0.0
 
     if is_power:
         value_y = sym.y + _POWER_VALUE_OFFSET
@@ -117,11 +121,11 @@ def _field_layout(
             "Reference": (
                 sym.x,
                 sym.y - _POWER_REFERENCE_OFFSET,
-                0.0,
+                field_rotation,
                 hidden_reference,
                 None,
             ),
-            "Value": (sym.x, value_y, 0.0, False, None),
+            "Value": (sym.x, value_y, field_rotation, False, None),
         }
 
     orientation = _two_pin_orientation(sym, library)
@@ -131,14 +135,14 @@ def _field_layout(
             "Reference": (
                 field_x,
                 sym.y - _FIELD_STACK_OFFSET,
-                0.0,
+                field_rotation,
                 hidden_reference,
                 "left",
             ),
             "Value": (
                 field_x,
                 sym.y + _FIELD_STACK_OFFSET,
-                0.0,
+                field_rotation,
                 False,
                 "left",
             ),
@@ -149,14 +153,14 @@ def _field_layout(
             "Reference": (
                 sym.x,
                 sym.y - _FIELD_CLEARANCE,
-                0.0,
+                field_rotation,
                 hidden_reference,
                 None,
             ),
             "Value": (
                 sym.x,
                 sym.y + _FIELD_CLEARANCE,
-                0.0,
+                field_rotation,
                 False,
                 None,
             ),
@@ -166,14 +170,14 @@ def _field_layout(
         "Reference": (
             sym.x,
             sym.y - _FIELD_CLEARANCE,
-            0.0,
+            field_rotation,
             hidden_reference,
             None,
         ),
         "Value": (
             sym.x,
             sym.y + _FIELD_CLEARANCE,
-            0.0,
+            field_rotation,
             False,
             None,
         ),
@@ -210,10 +214,7 @@ def _text_box(text: str, x: float, y: float, justify: str | None = None) -> Box:
 
 def _boxes_overlap(left: Box, right: Box) -> bool:
     return not (
-        left[2] <= right[0]
-        or right[2] <= left[0]
-        or left[3] <= right[1]
-        or right[3] <= left[1]
+        left[2] <= right[0] or right[2] <= left[0] or left[3] <= right[1] or right[3] <= left[1]
     )
 
 
@@ -277,9 +278,7 @@ def _wires_connected(left, right) -> bool:
 def _label_network(sch: Schematic, label) -> set[int]:
     """Return the connected wire component carrying a label's current anchor."""
     seeds = {
-        index
-        for index, wire in enumerate(sch.wires)
-        if _point_on_wire(label.x, label.y, wire)
+        index for index, wire in enumerate(sch.wires) if _point_on_wire(label.x, label.y, wire)
     }
     if not seeds:
         return set()
@@ -345,8 +344,7 @@ def _label_score(
 
     for junction in sch.junctions:
         if _point_in_box(junction.x, junction.y, box) and not (
-            math.isclose(junction.x, placement.x)
-            and math.isclose(junction.y, placement.y)
+            math.isclose(junction.x, placement.x) and math.isclose(junction.y, placement.y)
         ):
             penalty += 30.0
 
@@ -360,10 +358,7 @@ def _label_layouts(
 ) -> dict[str, _LabelPlacement]:
     """Place labels on their own wires while avoiding fields and nearby geometry."""
     field_boxes = _field_boxes(sch, libraries)
-    body_boxes = [
-        _symbol_body_box(sym, libraries[sym.lib_id])
-        for sym in sch.symbols
-    ]
+    body_boxes = [_symbol_body_box(sym, libraries[sym.lib_id]) for sym in sch.symbols]
     occupied: list[Box] = []
     result: dict[str, _LabelPlacement] = {}
 
@@ -431,6 +426,17 @@ def _property(
 def _symbol_instance(sym, project: str, library: SchLibrarySymbol) -> str:
     x, y, rot = _fmt(sym.x), _fmt(sym.y), _fmt(sym.rotation)
     fields = _field_layout(sym, library)
+    if int(round(sym.rotation)) % 360 == 180:
+        fields = {
+            name: (
+                x,
+                y,
+                angle,
+                hidden,
+                ({"left": "right", "right": "left"}.get(justify, justify) if justify else None),
+            )
+            for name, (x, y, angle, hidden, justify) in fields.items()
+        }
     lines: list[str] = []
     lines.append("(symbol")
     lines.append(f'  (lib_id "{sym.lib_id}")')

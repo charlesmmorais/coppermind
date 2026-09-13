@@ -6,6 +6,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ from mcp.client.stdio import stdio_client
 
 from coppermind.backends.memory_backend import MemoryBackend
 from coppermind.session import Session
+from coppermind.schematic.composer import _child, _parse_sexpr
 from coppermind.tools.circuit import (
     component_add,
     connect_incremental,
@@ -60,6 +62,34 @@ def _exported_pin_sets(path: Path) -> dict[str, set[tuple[str, str]]]:
     }
 
 
+def _assert_rendered_fields_are_horizontal(path: Path, expected: set[str]) -> None:
+    output = path.parent / "svg"
+    output.mkdir(exist_ok=True)
+    subprocess.run(
+        ["kicad-cli", "sch", "export", "svg", "--output", str(output) + os.sep, str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    found = set()
+
+    def visit(node, transforms=""):
+        transforms += " " + node.attrib.get("transform", "")
+        if node.tag.endswith("}text"):
+            value = "".join(node.itertext()).strip()
+            if value in expected:
+                found.add(value)
+                angles = re.findall(r"rotate\(\s*([-+.0-9]+)", transforms)
+                assert all(float(angle) % 360 == 0 for angle in angles), (value, transforms)
+        for child in node:
+            visit(child, transforms)
+
+    for svg in output.glob("*.svg"):
+        visit(ET.parse(svg).getroot())
+    assert found == expected, f"missing rendered fields: {expected - found}"
+
+
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
 def test_rotated_pin_identity_matches_real_kicad_netlist(tmp_path: Path, rotation: int):
     session = Session(backend=MemoryBackend())
@@ -88,6 +118,7 @@ def test_rotated_pin_identity_matches_real_kicad_netlist(tmp_path: Path, rotatio
         "VIN": {("J1", "1"), ("R1", "1")},
         "VOUT": {("R1", "2"), ("J2", "1")},
     }
+    _assert_rendered_fields_are_horizontal(output, {"R1", "10k"})
 
 
 def test_exact_mcp_flow_demo_passes_strict_erc_and_netlist(tmp_path: Path):
@@ -119,3 +150,16 @@ def test_exact_mcp_flow_demo_passes_strict_erc_and_netlist(tmp_path: Path):
         "N23": {("R2", "2"), ("R3", "1")},
         "VOUT": {("R3", "2"), ("J2", "1")},
     }
+    # A green ERC is insufficient: prevent the accepted-but-visually-wrong
+    # R1 -> R3 -> R2 ordering seen in the user's KiCad screenshot.
+    root = _parse_sexpr(output.read_text())
+    placements = {}
+    for node in root:
+        if isinstance(node, list) and node and node[0] == "symbol":
+            fields = {p[1]: p[2] for p in node if isinstance(p, list) and p[0] == "property"}
+            placements[fields["Reference"]] = [float(v) for v in _child(node, "at")[1:4]]
+    assert placements["J1"][0] < placements["R1"][0] < placements["R2"][0]
+    assert placements["R2"][0] < placements["R3"][0] < placements["J2"][0]
+    assert {placements[r][1] for r in ("R1", "R2", "R3")} == {placements["R1"][1]}
+    assert all(placements[r][2] == 90 for r in ("R1", "R2", "R3"))
+    _assert_rendered_fields_are_horizontal(output, {"R1", "R2", "R3", "10k", "22k", "47k"})

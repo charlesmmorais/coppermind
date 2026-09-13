@@ -14,10 +14,17 @@ from typing import Any
 
 from coppermind.circuit import Circuit
 from coppermind.schematic.composer import _pin_anchor, symbol_pin_geometry
-from coppermind.schematic.incremental import route_net_incremental
+from coppermind.schematic.incremental import _foreign_pin_contacts, route_net_incremental
 from coppermind.schematic.models import Schematic
 from coppermind.session import Session
-from coppermind.tools.auto_placement import component_place_auto
+from coppermind.tools.auto_placement import _component_place_auto, _page_clearance
+from coppermind.serialize.kicad_sch import (
+    _boxes_overlap,
+    _field_layout,
+    _symbol_body_box,
+    _text_box,
+    _wire_intersects_box,
+)
 
 _ROTATIONS = (0.0, 90.0, 180.0, 270.0)
 _AXIS_MISMATCH_PENALTY = 12.7
@@ -43,7 +50,9 @@ def _impacted_nets(circuit: Circuit, reference: str) -> list[str]:
 def _clear_impacted_geometry(schematic: Schematic, impacted: set[str]) -> None:
     schematic.wires = [wire for wire in schematic.wires if wire.net not in impacted]
     schematic.labels = [label for label in schematic.labels if label.net not in impacted]
-    schematic.junctions = [junction for junction in schematic.junctions if junction.net not in impacted]
+    schematic.junctions = [
+        junction for junction in schematic.junctions if junction.net not in impacted
+    ]
 
 
 def _target_symbol(schematic: Schematic, reference: str):
@@ -171,9 +180,7 @@ def _flow_metrics(
     mismatch_penalty = 0.0
     if displayed is not None and preferred is not None and displayed != preferred:
         mismatch_penalty = (
-            _AXIS_MISMATCH_PENALTY
-            if len(pin_centroids) >= 2
-            else _SINGLE_PIN_AXIS_MISMATCH_PENALTY
+            _AXIS_MISMATCH_PENALTY if len(pin_centroids) >= 2 else _SINGLE_PIN_AXIS_MISMATCH_PENALTY
         )
 
     return {
@@ -185,6 +192,45 @@ def _flow_metrics(
         "display_axis": displayed,
         "preferred_axis": preferred,
         "axis_mismatch_penalty": mismatch_penalty,
+    }
+
+
+def _flow_layout_cost(circuit: Circuit, schematic: Schematic, reference: str) -> dict[str, Any]:
+    """Score flow and displayed field clearance on the routed candidate."""
+    contacts = _foreign_pin_contacts(circuit, schematic)
+    if contacts:
+        raise ValueError(f"candidate creates FOREIGN_PIN_GEOMETRY_CONTACT: {contacts}")
+    flow = _flow_metrics(circuit, schematic, reference)
+    target_fields: list[tuple[float, float, float, float]] = []
+    other_fields: list[tuple[float, float, float, float]] = []
+    bodies = []
+    for symbol in schematic.symbols:
+        library = schematic.library_symbols[symbol.lib_id]
+        body = _symbol_body_box(symbol, library)
+        bodies.append(body)
+        fields = _field_layout(symbol, library)
+        for name, text in (("Reference", symbol.reference), ("Value", symbol.value)):
+            x, y, _, hidden, justify = fields[name]
+            if text and not hidden:
+                box = _text_box(text, x, y, justify)
+                (target_fields if symbol.reference == reference else other_fields).append(box)
+    boxes = bodies + target_fields + other_fields
+    bounds = (
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    )
+    _page_clearance(schematic, bounds)
+    collisions = sum(_boxes_overlap(a, b) for a in target_fields for b in bodies + other_fields)
+    collisions += sum(_wire_intersects_box(w, b) for b in target_fields for w in schematic.wires)
+    field_penalty = 25.4 * collisions
+    return {
+        **flow,
+        "field_collision_penalty": field_penalty,
+        "extra_score": float(flow["flow_distance_mm"]) * _FLOW_DISTANCE_WEIGHT
+        + float(flow["axis_mismatch_penalty"])
+        + field_penalty,
     }
 
 
@@ -205,13 +251,8 @@ def _evaluate_rotation(
     route_length = sum(float(item.get("route_length_mm", 0.0)) for item in routes)
     route_score = sum(float(item.get("route_score", 0.0)) for item in routes)
     route_bends = sum(int(item.get("route_bends", 0)) for item in routes)
-    flow = _flow_metrics(circuit, trial, reference)
-    total = (
-        route_score
-        + route_bends * _BEND_PENALTY_MM
-        + float(flow["flow_distance_mm"]) * _FLOW_DISTANCE_WEIGHT
-        + float(flow["axis_mismatch_penalty"])
-    )
+    flow = _flow_layout_cost(circuit, trial, reference)
+    total = route_score + route_bends * _BEND_PENALTY_MM + float(flow["extra_score"])
     return trial, {
         "rotation": target.rotation,
         "score": round(total, 3),
@@ -273,9 +314,7 @@ def choose_flow_orientation(
             summary["ok"] = True
             summaries.append(summary)
             keep_current_rank = 0 if math.isclose(rotation, current, abs_tol=_EPS) else 1
-            candidates.append(
-                ((float(summary["score"]), keep_current_rank, rank), trial, summary)
-            )
+            candidates.append(((float(summary["score"]), keep_current_rank, rank), trial, summary))
         except Exception as exc:
             summaries.append({"rotation": rotation, "ok": False, "error": str(exc)})
 
@@ -283,9 +322,7 @@ def choose_flow_orientation(
         errors = "; ".join(
             f"{item['rotation']}°: {item.get('error', 'rejected')}" for item in summaries
         )
-        raise RuntimeError(
-            f"no legal flow orientation for '{reference}'; candidates: {errors}"
-        )
+        raise RuntimeError(f"no legal flow orientation for '{reference}'; candidates: {errors}")
 
     _, best_schematic, best = min(candidates, key=lambda item: item[0])
     changed = not math.isclose(float(best["rotation"]), current, abs_tol=_EPS)
@@ -345,29 +382,53 @@ def component_place_flow(
     lock: bool = True,
     force: bool = False,
 ) -> dict:
-    """Auto-place a component, then orient it along its semantic electrical flow."""
-    placement = component_place_auto(
+    """Jointly choose position and rotation without changing accepted neighbours.
+
+    An explicit direction is relative to the requested anchor. It must not be
+    silently reinterpreted against a different component (the R3 backtracking
+    regression). The shared placement engine scores each position x rotation
+    on an isolated snapshot and commits only the final legal candidate.
+    """
+    circuit = session.require_circuit()
+    component = circuit.components[reference]
+    if component.properties.get("orientation_locked") == "true" and not force:
+        raise ValueError(
+            f"component '{reference}' orientation is locked; pass force=true to reevaluate it"
+        )
+    symbol = _target_symbol(session.require_schematic(), reference)
+    rotations = (symbol.rotation,) if symbol.lib_id.lower().startswith("power:") else _ROTATIONS
+    placement = _component_place_auto(
         session,
         reference,
         anchor,
-        gap_mm=gap_mm,
-        directions=directions,
-        lock=lock,
-        force=force,
+        gap_mm,
+        directions,
+        lock,
+        force,
+        rotations=rotations,
+        candidate_cost=_flow_layout_cost,
+        anchor_only=directions is not None,
     )
-    orientation = component_orient_flow(
-        session,
-        reference,
-        lock=lock,
-        force=force,
-    )
+    if lock:
+        component.properties["orientation_locked"] = "true"
+    elif force:
+        component.properties.pop("orientation_locked", None)
+    best = placement["chosen_metrics"]
+    orientation = {
+        **best,
+        "reference": reference,
+        "from_rotation": symbol.rotation,
+        "changed": not math.isclose(best["rotation"], symbol.rotation, abs_tol=_EPS),
+        "locked": component.properties.get("orientation_locked") == "true",
+        "pending_commit": True,
+    }
     return {
         "ok": True,
         "reference": reference,
         "placement": placement,
         "orientation": orientation,
-        "chosen_rotation": orientation.get("rotation"),
-        "flow_axis": orientation.get("display_axis"),
-        "rerouted_nets": orientation.get("rerouted_nets", placement.get("rerouted_nets", [])),
+        "chosen_rotation": best["rotation"],
+        "flow_axis": best.get("display_axis"),
+        "rerouted_nets": placement["rerouted_nets"],
         "pending_commit": True,
     }
