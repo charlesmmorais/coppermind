@@ -4,7 +4,13 @@ from pathlib import Path
 
 from coppermind.backends.memory_backend import MemoryBackend
 from coppermind.libraries import SymbolResolver
-from coppermind.schematic.incremental import validate_incremental_schematic
+from coppermind.schematic.incremental import (
+    _build_two_point_dogleg,
+    _route_incremental_geometry,
+    _route_score,
+    validate_incremental_schematic,
+)
+from coppermind.schematic.models import Wire
 from coppermind.session import Session
 from coppermind.tools.circuit import (
     component_add,
@@ -63,8 +69,8 @@ def _place(
     )
 
 
-def _connect(session: Session, net: str, *pins: str) -> None:
-    connect_incremental(session, net, list(pins))
+def _connect(session: Session, net: str, *pins: str) -> dict:
+    return connect_incremental(session, net, list(pins))
 
 
 def _net_geometry(session: Session, net: str) -> list[dict]:
@@ -123,8 +129,13 @@ def test_dense_incremental_build_preserves_unrelated_nets(tmp_path: Path):
 
     _add(session, "R9", "100k")
     _place(session, "R9", "R7", "right", 38.1)
-    _connect(session, "VIN", "R1.1", "R9.1")
+    vin_result = _connect(session, "VIN", "R1.1", "R9.1")
     _connect(session, "SENSE", "R7.2", "R9.2")
+
+    vin_route = vin_result["route"]
+    assert vin_route["route_length_mm"] > 0
+    assert vin_route["route_score"] >= vin_route["route_length_mm"]
+    assert vin_route["route_bends"] >= 0
 
     for name, geometry in settled_before_r9.items():
         assert _net_geometry(session, name) == geometry
@@ -147,3 +158,30 @@ def test_dense_incremental_build_preserves_unrelated_nets(tmp_path: Path):
 
     checkpoint = schematic_checkpoint(session, run_external=False)
     assert checkpoint["committed"] is True
+
+
+def test_route_score_penalizes_unnecessary_envelope_expansion():
+    points = [(0.0, 0.0), (50.8, 20.32)]
+    foreign = [
+        Wire(x1=-50.8, y1=101.6, x2=101.6, y2=101.6, net="OTHER"),
+    ]
+    inside = _build_two_point_dogleg("VIN", points[0], points[1], detour_y=30.48)
+    outside = _build_two_point_dogleg("VIN", points[0], points[1], detour_y=-20.32)
+
+    assert _route_score(inside[0], points, foreign) < _route_score(
+        outside[0], points, foreign
+    )
+
+
+def test_incremental_router_scores_all_legal_doglegs_before_choosing():
+    points = [(0.0, 0.0), (50.8, 20.32)]
+    foreign = [
+        Wire(x1=25.4, y1=-5.08, x2=25.4, y2=25.4, net="BLOCKER"),
+        Wire(x1=-50.8, y1=101.6, x2=101.6, y2=101.6, net="ENVELOPE"),
+    ]
+
+    wires, label, _junctions = _route_incremental_geometry("VIN", points, foreign)
+
+    assert label.y > max(y for _, y in points)
+    assert all(wire.net == "VIN" for wire in wires)
+    assert sum(abs(wire.x2 - wire.x1) + abs(wire.y2 - wire.y1) for wire in wires) < 100
