@@ -11,7 +11,8 @@ import uuid as _uuid
 from dataclasses import dataclass
 
 from coppermind.libraries import SymbolResolver
-from coppermind.schematic.composer import symbol_pin_geometry
+from coppermind.schematic.composer import symbol_pin_geometry, symbol_sheet_offset
+from coppermind.schematic.symbol_geometry import symbol_graphic_box
 from coppermind.schematic.models import (
     Schematic,
     SchLibraryDefinition,
@@ -108,6 +109,10 @@ def _field_layout(
     token = sym.lib_id.lower()
     is_power = token.startswith("power:")
     hidden_reference = is_power or sym.reference.startswith("#")
+    # KiCad SCH_FIELD::GetDrawRotation toggles the field axis for quarter-
+    # turned parents. Store a vertical local field to render horizontal on
+    # the sheet; 180-degree parents retain the horizontal text axis.
+    field_rotation = 90.0 if int(round(sym.rotation / 90.0)) % 2 else 0.0
 
     if is_power:
         value_y = sym.y + _POWER_VALUE_OFFSET
@@ -117,11 +122,11 @@ def _field_layout(
             "Reference": (
                 sym.x,
                 sym.y - _POWER_REFERENCE_OFFSET,
-                0.0,
+                field_rotation,
                 hidden_reference,
                 None,
             ),
-            "Value": (sym.x, value_y, 0.0, False, None),
+            "Value": (sym.x, value_y, field_rotation, False, None),
         }
 
     orientation = _two_pin_orientation(sym, library)
@@ -131,14 +136,14 @@ def _field_layout(
             "Reference": (
                 field_x,
                 sym.y - _FIELD_STACK_OFFSET,
-                0.0,
+                field_rotation,
                 hidden_reference,
                 "left",
             ),
             "Value": (
                 field_x,
                 sym.y + _FIELD_STACK_OFFSET,
-                0.0,
+                field_rotation,
                 False,
                 "left",
             ),
@@ -149,14 +154,14 @@ def _field_layout(
             "Reference": (
                 sym.x,
                 sym.y - _FIELD_CLEARANCE,
-                0.0,
+                field_rotation,
                 hidden_reference,
                 None,
             ),
             "Value": (
                 sym.x,
                 sym.y + _FIELD_CLEARANCE,
-                0.0,
+                field_rotation,
                 False,
                 None,
             ),
@@ -166,26 +171,18 @@ def _field_layout(
         "Reference": (
             sym.x,
             sym.y - _FIELD_CLEARANCE,
-            0.0,
+            field_rotation,
             hidden_reference,
             None,
         ),
         "Value": (
             sym.x,
             sym.y + _FIELD_CLEARANCE,
-            0.0,
+            field_rotation,
             False,
             None,
         ),
     }
-
-
-def _rotate(x: float, y: float, degrees: float) -> tuple[float, float]:
-    angle = math.radians(degrees)
-    return (
-        x * math.cos(angle) - y * math.sin(angle),
-        x * math.sin(angle) + y * math.cos(angle),
-    )
 
 
 def _text_box(text: str, x: float, y: float, justify: str | None = None) -> Box:
@@ -218,28 +215,34 @@ def _text_box(text: str, x: float, y: float, justify: str | None = None) -> Box:
 
 def _boxes_overlap(left: Box, right: Box) -> bool:
     return not (
-        left[2] <= right[0]
-        or right[2] <= left[0]
-        or left[3] <= right[1]
-        or right[3] <= left[1]
+        left[2] <= right[0] or right[2] <= left[0] or left[3] <= right[1] or right[3] <= left[1]
     )
 
 
 def _symbol_body_box(sym, library: SchLibrarySymbol) -> Box:
     points: list[tuple[float, float]] = []
     for pin in symbol_pin_geometry(library, sym.unit).values():
-        dx, dy = _rotate(pin.x, -pin.y, sym.rotation)
+        dx, dy = symbol_sheet_offset(pin.x, pin.y, sym.rotation)
         points.append((sym.x + dx, sym.y + dy))
     if not points:
         points = [(sym.x - 2.54, sym.y - 2.54), (sym.x + 2.54, sym.y + 2.54)]
     xs = [point[0] for point in points]
     ys = [point[1] for point in points]
     margin = 1.27
-    return (
+    pin_box = (
         min(xs) - margin,
         min(ys) - margin,
         max(xs) + margin,
         max(ys) + margin,
+    )
+    graphic = symbol_graphic_box(sym, library)
+    if graphic is None:
+        return pin_box
+    return (
+        min(pin_box[0], graphic[0]),
+        min(pin_box[1], graphic[1]),
+        max(pin_box[2], graphic[2]),
+        max(pin_box[3], graphic[3]),
     )
 
 
@@ -287,7 +290,8 @@ def _label_network(sch: Schematic, label) -> set[int]:
     seeds = {
         index
         for index, wire in enumerate(sch.wires)
-        if _point_on_wire(label.x, label.y, wire)
+        if (not label.net or not wire.net or wire.net == label.net)
+        and _point_on_wire(label.x, label.y, wire)
     }
     if not seeds:
         return set()
@@ -299,6 +303,8 @@ def _label_network(sch: Schematic, label) -> set[int]:
         current = sch.wires[index]
         for other_index, other in enumerate(sch.wires):
             if other_index in network:
+                continue
+            if label.net and other.net and other.net != label.net:
                 continue
             if _wires_connected(current, other):
                 network.add(other_index)
@@ -352,10 +358,7 @@ def _label_score(
             penalty += 50.0
 
     for junction in sch.junctions:
-        if _point_in_box(junction.x, junction.y, box) and not (
-            math.isclose(junction.x, placement.x)
-            and math.isclose(junction.y, placement.y)
-        ):
+        if _point_in_box(junction.x, junction.y, box):
             penalty += 30.0
 
     distance = math.hypot(placement.x - label.x, placement.y - label.y)
@@ -368,10 +371,7 @@ def _label_layouts(
 ) -> dict[str, _LabelPlacement]:
     """Place labels on their own wires while avoiding fields and nearby geometry."""
     field_boxes = _field_boxes(sch, libraries)
-    body_boxes = [
-        _symbol_body_box(sym, libraries[sym.lib_id])
-        for sym in sch.symbols
-    ]
+    body_boxes = [_symbol_body_box(sym, libraries[sym.lib_id]) for sym in sch.symbols]
     occupied: list[Box] = []
     result: dict[str, _LabelPlacement] = {}
 
@@ -418,6 +418,31 @@ def _label_layouts(
     return result
 
 
+def label_clearance_violations(sch: Schematic) -> list[dict]:
+    """Validate the label positions that serialization will actually emit."""
+    libraries = _resolved_library_symbols(sch, None)
+    placements = _label_layouts(sch, libraries)
+    fields = _field_boxes(sch, libraries)
+    bodies = [_symbol_body_box(sym, libraries[sym.lib_id]) for sym in sch.symbols]
+    occupied: list[Box] = []
+    violations = []
+    for label in sch.labels:
+        placement = placements[label.uuid]
+        score = _label_score(
+            sch, label, placement, _label_network(sch, label), fields, bodies, occupied
+        )[0]
+        if score:
+            violations.append(
+                {
+                    "severity": "error",
+                    "type": "LABEL_CLEARANCE_COLLISION",
+                    "description": f"label '{label.text}' has no clear candidate on its net",
+                }
+            )
+        occupied.append(_text_box(label.text, placement.x, placement.y, placement.justify))
+    return violations
+
+
 def _property(
     name: str,
     value: str,
@@ -439,6 +464,17 @@ def _property(
 def _symbol_instance(sym, project: str, library: SchLibrarySymbol) -> str:
     x, y, rot = _fmt(sym.x), _fmt(sym.y), _fmt(sym.rotation)
     fields = _field_layout(sym, library)
+    if int(round(sym.rotation)) % 360 == 180:
+        fields = {
+            name: (
+                x,
+                y,
+                angle,
+                hidden,
+                ({"left": "right", "right": "left"}.get(justify, justify) if justify else None),
+            )
+            for name, (x, y, angle, hidden, justify) in fields.items()
+        }
     lines: list[str] = []
     lines.append("(symbol")
     lines.append(f'  (lib_id "{sym.lib_id}")')

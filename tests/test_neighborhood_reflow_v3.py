@@ -2,17 +2,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from coppermind.backends.memory_backend import MemoryBackend
 from coppermind.libraries import SymbolResolver
 from coppermind.schematic.incremental import route_net_incremental, validate_incremental_schematic
 from coppermind.session import Session
 from coppermind.tools.circuit import component_add, connect_pins, create_net
 from coppermind.tools.core import project_create
+from coppermind.tools.flow_orientation import component_orient_flow
 from coppermind.tools.neighborhood_reflow_v3 import component_reflow_neighborhood
 from coppermind.tools.registry import REGISTRY
 
 
-DEVICE_LIB = r'''(kicad_symbol_lib
+DEVICE_LIB = r"""(kicad_symbol_lib
   (version 20231120)
   (generator kicad_symbol_editor)
   (symbol "R"
@@ -30,7 +33,7 @@ DEVICE_LIB = r'''(kicad_symbol_lib
         (number "2" (effects (font (size 1.27 1.27)))))
     )
   )
-)'''
+)"""
 
 
 def _session(tmp_path: Path) -> Session:
@@ -42,7 +45,9 @@ def _session(tmp_path: Path) -> Session:
 
 
 def _set_position(session: Session, reference: str, x: float, y: float) -> None:
-    symbol = next(item for item in session.require_schematic().symbols if item.reference == reference)
+    symbol = next(
+        item for item in session.require_schematic().symbols if item.reference == reference
+    )
     symbol.x = x
     symbol.y = y
 
@@ -92,8 +97,7 @@ def test_v4_target_bridge_reroutes_neighborhood_without_moving_other_symbols(tmp
     route_net_incremental(session.require_circuit(), session.require_schematic(), "FB")
 
     before = {
-        symbol.reference: (symbol.x, symbol.y)
-        for symbol in session.require_schematic().symbols
+        symbol.reference: (symbol.x, symbol.y) for symbol in session.require_schematic().symbols
     }
     result = component_reflow_neighborhood(
         session,
@@ -113,8 +117,7 @@ def test_v4_target_bridge_reroutes_neighborhood_without_moving_other_symbols(tmp
     assert result["routable_candidates"] > 0
 
     after = {
-        symbol.reference: (symbol.x, symbol.y)
-        for symbol in session.require_schematic().symbols
+        symbol.reference: (symbol.x, symbol.y) for symbol in session.require_schematic().symbols
     }
     for reference in before:
         if reference != "R9":
@@ -128,6 +131,37 @@ def test_v4_target_bridge_reroutes_neighborhood_without_moving_other_symbols(tmp
     )
     assert validation["blocking"] is False
     assert validation["semantic_violations"] == []
+
+    # Orient the dense target after reflow while retaining accepted placement,
+    # the entire electrical graph and all non-focus route geometry.
+    schematic = session.require_schematic()
+    before_symbols = {s.reference: s.model_dump() for s in schematic.symbols if s.reference != "R9"}
+    before_nets = session.require_circuit().model_dump()["nets"]
+    before_wires = [w.model_dump() for w in schematic.wires if w.net not in {"VIN", "SENSE"}]
+    focus_length_before = sum(
+        abs(w.x2 - w.x1) + abs(w.y2 - w.y1) for w in schematic.wires if w.net in {"VIN", "SENSE"}
+    )
+    oriented = component_orient_flow(session, "R9")
+    assert {c["rotation"] for c in oriented["candidates"]} == {0, 90, 180, 270}
+    schematic = session.require_schematic()
+    focus_length_after = sum(
+        abs(w.x2 - w.x1) + abs(w.y2 - w.y1) for w in schematic.wires if w.net in {"VIN", "SENSE"}
+    )
+    assert focus_length_before > 0
+    assert focus_length_after == pytest.approx(oriented["route_length_mm"], abs=0.002)
+    assert before_symbols == {
+        s.reference: s.model_dump() for s in schematic.symbols if s.reference != "R9"
+    }
+    assert before_nets == session.require_circuit().model_dump()["nets"]
+    assert before_wires == [
+        w.model_dump() for w in schematic.wires if w.net not in {"VIN", "SENSE"}
+    ]
+    assert (
+        validate_incremental_schematic(session.require_circuit(), schematic, run_external=False)[
+            "blocking"
+        ]
+        is False
+    )
 
 
 def test_registry_uses_target_bridge_reflow():

@@ -21,6 +21,7 @@ from coppermind.schematic.composer import (
     _pin_anchor as _semantic_pin_anchor,
     _route_net as _semantic_route_net,
     symbol_pin_geometry,
+    symbol_sheet_offset,
 )
 from coppermind.schematic.erc import evaluate_schematic, run_kicad_erc
 from coppermind.schematic.models import Schematic, SchSymbol
@@ -63,17 +64,12 @@ def _coord(value: float) -> float:
     return round(value, 6)
 
 
-def _rotate(x: float, y: float, degrees: float) -> tuple[float, float]:
-    angle = math.radians(degrees)
-    return x * math.cos(angle) - y * math.sin(angle), x * math.sin(angle) + y * math.cos(angle)
-
-
 def _symbol_bounds(schematic: Schematic, symbol: SchSymbol) -> tuple[float, float, float, float]:
     library = schematic.library_symbols.get(symbol.lib_id)
     points: list[tuple[float, float]] = []
     if library is not None:
         for pin in symbol_pin_geometry(library, symbol.unit).values():
-            dx, dy = _rotate(pin.x, -pin.y, symbol.rotation)
+            dx, dy = symbol_sheet_offset(pin.x, pin.y, symbol.rotation)
             points.append((symbol.x + dx, symbol.y + dy))
     if not points:
         points = [(symbol.x - 5.08, symbol.y - 5.08), (symbol.x + 5.08, symbol.y + 5.08)]

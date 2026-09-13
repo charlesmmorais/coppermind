@@ -9,7 +9,9 @@ is committed atomically.
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Callable
+
+from coppermind.circuit import Circuit
 
 from coppermind.schematic.incremental import place_relative_geometry, route_net_incremental
 from coppermind.schematic.models import Schematic
@@ -26,6 +28,8 @@ _FREE_SPACE_STEP_MM = 12.7
 _FREE_SPACE_MAX_CANDIDATES = 256
 _FREE_SPACE_PENALTY = 10.0
 _EPS = 1e-6
+
+CandidateCost = Callable[[Circuit, Schematic, str], dict[str, Any]]
 
 # KiCad drawing-sheet dimensions in landscape orientation, in millimetres.
 # Unknown/custom paper names remain unconstrained rather than being guessed.
@@ -135,12 +139,7 @@ def _envelope_expansion(
         return 0.0
     sx0, sy0, sx1, sy1 = stable
     cx0, cy0, cx1, cy1 = candidate
-    return (
-        max(0.0, sx0 - cx0)
-        + max(0.0, cx1 - sx1)
-        + max(0.0, sy0 - cy0)
-        + max(0.0, cy1 - sy1)
-    )
+    return max(0.0, sx0 - cx0) + max(0.0, cx1 - sx1) + max(0.0, sy0 - cy0) + max(0.0, cy1 - sy1)
 
 
 def _proximity_penalty(schematic: Schematic, reference: str) -> tuple[float, float | None]:
@@ -288,6 +287,7 @@ def _score_trial(
     stable_bounds: tuple[float, float, float, float] | None,
     reference: str,
     extra_penalty: float = 0.0,
+    candidate_cost: CandidateCost | None = None,
 ) -> tuple[float, dict[str, Any]]:
     proximity_penalty, nearest = _proximity_penalty(trial, reference)
     _clear_impacted_geometry(trial, impacted_set)
@@ -307,12 +307,15 @@ def _score_trial(
         "envelope_expansion_mm": round(expansion, 3),
         "proximity_penalty": round(proximity_penalty, 3),
         "edge_penalty": round(edge_penalty, 3),
-        "edge_clearance_mm": (
-            round(edge_clearance, 3) if edge_clearance is not None else None
-        ),
+        "edge_clearance_mm": (round(edge_clearance, 3) if edge_clearance is not None else None),
         "nearest_component_mm": round(nearest, 3) if nearest is not None else None,
         "rerouted_nets": impacted,
     }
+    if candidate_cost is not None:
+        extra = candidate_cost(circuit, trial, reference)
+        total += float(extra["extra_score"])
+        metrics.update(extra)
+        metrics["score"] = round(total, 3)
     return total, metrics
 
 
@@ -324,6 +327,31 @@ def component_place_auto(
     directions: list[str] | None = None,
     lock: bool = True,
     force: bool = False,
+) -> dict:
+    """Choose the best bounded local placement and route its semantic nets."""
+    return _component_place_auto(
+        session,
+        reference,
+        anchor,
+        gap_mm,
+        directions,
+        lock,
+        force,
+    )
+
+
+def _component_place_auto(
+    session: Session,
+    reference: str,
+    anchor: str,
+    gap_mm: float = 25.4,
+    directions: list[str] | None = None,
+    lock: bool = True,
+    force: bool = False,
+    *,
+    rotations: tuple[float, ...] | None = None,
+    candidate_cost: CandidateCost | None = None,
+    anchor_only: bool = False,
 ) -> dict:
     """Choose the best bounded local placement and route its semantic nets."""
     circuit = session.require_circuit()
@@ -346,24 +374,83 @@ def component_place_auto(
     impacted = _impacted_nets(session, reference)
     impacted_set = set(impacted)
     anchors_to_try = _candidate_anchors(session, reference, anchor, impacted)
+    if anchor_only:
+        anchors_to_try = [anchor]
+    current_rotation = next(s.rotation for s in base.symbols if s.reference == reference)
+    rotations_to_try = rotations if rotations is not None else (current_rotation,)
     stable_bounds = _stable_bounds(base, reference, impacted_set)
 
     evaluated: list[dict[str, Any]] = []
-    successful: list[tuple[tuple[float, int, int, int, int], Schematic, dict[str, Any]]] = []
+    successful: list[tuple[tuple[float, int, int, int, int, int], Schematic, dict[str, Any]]] = []
 
     for anchor_rank, candidate_anchor in enumerate(anchors_to_try):
         anchor_penalty = float(anchor_rank) * _CONNECTED_ANCHOR_PENALTY
         for gap_rank, candidate_gap in enumerate(gaps_to_try):
             for direction_rank, direction in enumerate(directions_to_try):
+                for rotation_rank, rotation in enumerate(rotations_to_try):
+                    trial = base.model_copy(deep=True)
+                    next(s for s in trial.symbols if s.reference == reference).rotation = rotation
+                    try:
+                        placement = place_relative_geometry(
+                            trial,
+                            reference,
+                            candidate_anchor,
+                            direction=direction,
+                            gap_mm=candidate_gap,
+                        )
+                        total, metrics = _score_trial(
+                            circuit,
+                            trial,
+                            impacted,
+                            impacted_set,
+                            stable_bounds,
+                            reference,
+                            extra_penalty=anchor_penalty,
+                            candidate_cost=candidate_cost,
+                        )
+                        summary: dict[str, Any] = {
+                            "mode": "relative",
+                            "rotation": rotation,
+                            "anchor": candidate_anchor,
+                            "direction": direction,
+                            "gap_mm": round(candidate_gap, 3),
+                            "ok": True,
+                            "anchor_penalty": round(anchor_penalty, 3),
+                            "to": placement["to"],
+                            **metrics,
+                        }
+                        evaluated.append(summary)
+                        successful.append(
+                            (
+                                (total, 0, anchor_rank, gap_rank, direction_rank, rotation_rank),
+                                trial,
+                                summary,
+                            )
+                        )
+                    except Exception as exc:
+                        evaluated.append(
+                            {
+                                "mode": "relative",
+                                "rotation": rotation,
+                                "anchor": candidate_anchor,
+                                "direction": direction,
+                                "gap_mm": round(candidate_gap, 3),
+                                "ok": False,
+                                "error": str(exc),
+                            }
+                        )
+
+    # Relative placement remains preferred. Only when every semantic relative
+    # candidate is blocked do we scan bounded free page space. This prevents a
+    # dense local cluster from forcing a component outside the sheet or failing
+    # solely because no one-anchor direction can express a legal diagonal slot.
+    if not successful and not anchor_only:
+        for point_rank, (x, y) in enumerate(_free_space_points(base, stable_bounds)):
+            for rotation_rank, rotation in enumerate(rotations_to_try):
                 trial = base.model_copy(deep=True)
+                next(s for s in trial.symbols if s.reference == reference).rotation = rotation
                 try:
-                    placement = place_relative_geometry(
-                        trial,
-                        reference,
-                        candidate_anchor,
-                        direction=direction,
-                        gap_mm=candidate_gap,
-                    )
+                    placement = _move_symbol_to(trial, reference, x, y)
                     total, metrics = _score_trial(
                         circuit,
                         trial,
@@ -371,76 +458,35 @@ def component_place_auto(
                         impacted_set,
                         stable_bounds,
                         reference,
-                        extra_penalty=anchor_penalty,
+                        extra_penalty=_FREE_SPACE_PENALTY,
+                        candidate_cost=candidate_cost,
                     )
-                    summary: dict[str, Any] = {
-                        "mode": "relative",
-                        "anchor": candidate_anchor,
-                        "direction": direction,
-                        "gap_mm": round(candidate_gap, 3),
+                    summary = {
+                        "mode": "free-space",
+                        "rotation": rotation,
+                        "anchor": None,
+                        "direction": None,
+                        "gap_mm": None,
                         "ok": True,
-                        "anchor_penalty": round(anchor_penalty, 3),
+                        "free_space_penalty": _FREE_SPACE_PENALTY,
                         "to": placement["to"],
                         **metrics,
                     }
                     evaluated.append(summary)
-                    successful.append(
-                        ((total, 0, anchor_rank, gap_rank, direction_rank), trial, summary)
-                    )
+                    successful.append(((total, 1, point_rank, 0, 0, rotation_rank), trial, summary))
                 except Exception as exc:
                     evaluated.append(
                         {
-                            "mode": "relative",
-                            "anchor": candidate_anchor,
-                            "direction": direction,
-                            "gap_mm": round(candidate_gap, 3),
+                            "mode": "free-space",
+                            "rotation": rotation,
+                            "anchor": None,
+                            "direction": None,
+                            "gap_mm": None,
+                            "to": {"x": x, "y": y},
                             "ok": False,
                             "error": str(exc),
                         }
                     )
-
-    # Relative placement remains preferred. Only when every semantic relative
-    # candidate is blocked do we scan bounded free page space. This prevents a
-    # dense local cluster from forcing a component outside the sheet or failing
-    # solely because no one-anchor direction can express a legal diagonal slot.
-    if not successful:
-        for point_rank, (x, y) in enumerate(_free_space_points(base, stable_bounds)):
-            trial = base.model_copy(deep=True)
-            try:
-                placement = _move_symbol_to(trial, reference, x, y)
-                total, metrics = _score_trial(
-                    circuit,
-                    trial,
-                    impacted,
-                    impacted_set,
-                    stable_bounds,
-                    reference,
-                    extra_penalty=_FREE_SPACE_PENALTY,
-                )
-                summary = {
-                    "mode": "free-space",
-                    "anchor": None,
-                    "direction": None,
-                    "gap_mm": None,
-                    "ok": True,
-                    "free_space_penalty": _FREE_SPACE_PENALTY,
-                    "to": placement["to"],
-                    **metrics,
-                }
-                evaluated.append(summary)
-                successful.append(((total, 1, point_rank, 0, 0), trial, summary))
-            except Exception as exc:
-                evaluated.append(
-                    {
-                        "mode": "free-space",
-                        "anchor": None,
-                        "direction": None,
-                        "gap_mm": None,
-                        "to": {"x": x, "y": y},
-                        "ok": False,
-                        "error": str(exc),
-                    }
-                )
 
     if not successful:
         relative_errors = [item for item in evaluated if item.get("mode") == "relative"]
@@ -471,6 +517,8 @@ def component_place_auto(
         "gap_mm": gap_mm,
         "chosen_gap_mm": best.get("gap_mm"),
         "chosen_direction": best.get("direction"),
+        "chosen_rotation": best["rotation"],
+        "chosen_metrics": best,
         "score": best["score"],
         "to": best["to"],
         "rerouted_nets": impacted,

@@ -23,6 +23,7 @@ from coppermind.tools.circuit import (
 )
 from coppermind.tools.composer import COMPOSER_ROUTED_TOOLS
 from coppermind.tools.core import component_place, net_create, net_route
+from coppermind.tools.flow_orientation import component_orient_flow, component_place_flow
 from coppermind.tools.neighborhood_reflow_v3 import component_reflow_neighborhood
 from coppermind.tools.routed import ROUTED_TOOLS
 
@@ -51,6 +52,8 @@ _LEGACY_ROUTED = (component_place, net_create, net_route)
 _INCREMENTAL_ROUTED = (
     component_place_relative,
     component_place_auto,
+    component_place_flow,
+    component_orient_flow,
     component_reflow_neighborhood,
     component_freeze_placement,
     connect_incremental,

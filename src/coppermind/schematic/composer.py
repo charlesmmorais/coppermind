@@ -154,9 +154,19 @@ def _coord(value: float) -> float:
     return round(value, 6)
 
 
-def _rotate(x: float, y: float, degrees: float) -> tuple[float, float]:
+def symbol_sheet_offset(x: float, y: float, degrees: float) -> tuple[float, float]:
+    """Map a library point to a sheet offset using KiCad's symbol rotation.
+
+    Rotate in the library's Y-up frame, then reflect Y for the Y-down sheet.
+    Reflecting before rotation reverses quarter turns and swaps real pin sides.
+    Only normalize floating-point noise; never snap electrical pins to a grid.
+    Shared by routing and visual/serializer bounds to keep their geometry equal.
+    """
     angle = math.radians(degrees)
-    return x * math.cos(angle) - y * math.sin(angle), x * math.sin(angle) + y * math.cos(angle)
+    return (
+        _coord(x * math.cos(angle) - y * math.sin(angle)),
+        _coord(-x * math.sin(angle) - y * math.cos(angle)),
+    )
 
 
 def _component_graph(circuit: Circuit) -> dict[str, set[str]]:
@@ -296,7 +306,7 @@ def _place_symbol_pin_at(
     if pin is None:
         return False
     symbol.rotation = 0.0
-    dx, dy = _rotate(pin.x, -pin.y, symbol.rotation)
+    dx, dy = symbol_sheet_offset(pin.x, pin.y, symbol.rotation)
     symbol.x = _coord(target[0] - dx)
     symbol.y = _coord(target[1] - dy)
     return True
@@ -489,7 +499,7 @@ def _pin_anchor(schematic: Schematic, reference: str, pin_number: str) -> tuple[
     # KiCad library symbol coordinates use Y-up while schematic sheet
     # coordinates use Y-down. Preserve the exact pin endpoint: many real
     # symbols intentionally use half-grid offsets such as 1.27/3.81 mm.
-    dx, dy = _rotate(pin.x, -pin.y, sym.rotation)
+    dx, dy = symbol_sheet_offset(pin.x, pin.y, sym.rotation)
     return _coord(sym.x + dx), _coord(sym.y + dy)
 
 
