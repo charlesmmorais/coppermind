@@ -1,93 +1,111 @@
-# PR #20 — revisão visual do divisor e do circuito denso
+# PR #20 — orientação e clearance visual
 
-Revisão de 13/09/2026 sobre o commit `1b7b93882451623167de0363bc5df94b8d885523`.
+**As colisões registradas na revisão anterior foram corrigidas.** Revisão dos
+SVGs exportados pelo KiCad 10 sobre o commit `c714422e6549fe3b19ba2742445e27308a277a2b`.
+O PR permanece Draft, aguardando o aceite local de Charles no Eeschema antes do merge.
 
-**Resultado: orientação e preservação confirmadas; aprovação visual completa bloqueada.**
-Não fazer merge com base apenas na CI verde: ainda há colisões de desenho.
+[CI da correção](https://github.com/charlesmmorais/coppermind/actions/runs/34765522106)
+— integração KiCad: 10 testes passaram, 1 foi ignorado.
+[Artefato flow-visual-review](https://github.com/charlesmmorais/coppermind/actions/runs/34765522106/artifacts/10320096683)
+contém os esquemas reais, SVGs, netlists e `comparison.json`.
 
-As imagens abaixo são recortes dos SVGs exportados pelo KiCad 10 na CI, renderizados
-com MuPDF. Não são desenhos reconstruídos a partir da topologia nem screenshots
-obtidos no Windows do usuário. O aceite local no Eeschema continua pendente.
+As imagens são recortes dos SVGs reais da CI, renderizados com MuPDF; não são
+screenshots do Windows de Charles. A [revisão anterior](before-clearance.md),
+com as colisões originais, foi preservada para comparação.
 
-[Execução da CI](https://github.com/charlesmmorais/coppermind/actions/runs/34762660741)
-— Python 3.11, Python 3.12 e integração KiCad passaram.
-[Artefato flow-visual-review](https://github.com/charlesmmorais/coppermind/actions/runs/34762660741/artifacts/10319333003)
-contém quatro `.kicad_sch`, quatro netlists reais, quatro SVGs e `comparison.json`.
+## O que mudou
 
-## Resultados medidos
+- O roteador considera os corpos desenhados na biblioteca real, com transformação
+  de coordenadas e rotação. Unit 0 continua compartilhada; os anchors dos pins
+  não são arredondados para a grade.
+- Candidatos podem sair pelo eixo real do pin antes de procurar um trunk. Faixas
+  próximas às bordas dos corpos evitam desvios grandes desnecessários.
+- Reference/Value visíveis entram no custo do roteamento e nas faixas candidatas,
+  inclusive os campos de componentes vizinhos ao alvo.
+- A caixa de proteção de labels inclui o corpo gráfico real de J2, antes ausente
+  na estimativa baseada apenas no pin. Labels continuam ancorados no próprio fio;
+  uma net não pode ser seguida através de um crossing com outra net.
+- `WIRE_SYMBOL_BODY_CONTACT` bloqueia contatos de fios com corpos. A validação
+  retorna também `visual_violations`, incluindo `LABEL_CLEARANCE_COLLISION` quando
+  não há candidato livre para o label. O score de campos considera distância,
+  mas sua aproximação não substitui a inspeção visual.
+- Crossings ortogonais interior/interior continuam permitidos. T-contact, overlap,
+  contato com pin estrangeiro e crossing sobre junction elétrica continuam bloqueados.
 
-| Caso | Orientação | Fios antes → depois | Preservação | Revisão visual |
-| --- | --- | --- | --- | --- |
-| Divisor VIN/R1/VOUT/R2/GND | R1 e R2 a 0°, eixo vertical | 81,28 → 81,28 mm | J1/J2 e posições de R1/R2 mantidos | GND sobrepõe o corpo de J2 |
-| Denso VIN/VOUT/FB/SENSE/GND, R1…R9 | R9 de 0° para 90° | 322,58 → 323,85 mm | R1…R8: posição, rotação e campos idênticos; R9 não se moveu | SENSE atravessa o corpo de R7 e coincide com a borda superior de R8 |
+## Resultado dos cenários
 
-O baseline denso é o layout **após o reflow** do exemplo existente, antes de
-`component_orient_flow(R9)`. Assim, a comparação isola o efeito da orientação.
+| Cenário | Orientação | Comprimento antes → depois da orientação | Preservação |
+| --- | --- | --- | --- |
+| Cadeia horizontal | R1/R2/R3: 90° | Conectividade exata confirmada no KiCad | Ordem J1 → R1 → R2 → R3 → J2 |
+| Divisor vertical | R1/R2: 0° | 81,28 → 81,28 mm | J1/J2 e posições dos resistores mantidos |
+| Denso R1…R9 | R9: 0°, mantida por menor custo | 325,12 → 325,12 mm | R1…R8: posições, rotações e campos mantidos |
 
-As quatro rotações foram avaliadas. Para R9, o eixo preferido pelos centroides é
-vertical, mas a candidata horizontal tem menor custo total: 167,894 → 141,224.
-A penalização por colisão dos campos do alvo cai de 50,8 para zero. A troca custa
-1,27 mm de fio e uma dobra adicional nas nets VIN/SENSE (78,74 → 80,01 mm).
-Isso confirma a escolha por custo conjunto, sem garantir que todos os elementos
-do esquema já tenham clearance visual suficiente.
+O denso é reconstruído pelo mesmo exemplo MCP e passa por reflow antes da
+comparação de orientação. O reflow pode reposicionar R9; a orientação posterior
+não move nenhum componente. R1…R8 também permanecem nas coordenadas da revisão
+anterior. Há regressão adicional com a posição antiga de R9, provando que reparar
+SENSE isoladamente não move os símbolos nem altera os fios da net VIN.
 
-## Divisor vertical
+O resultado anterior tinha 323,85 mm de fios, mas cortava corpos. O resultado
+corrigido tem 325,12 mm (+1,27 mm) e respeita os obstáculos. R9 agora permanece
+vertical porque essa combinação com o novo roteamento tem menor custo.
 
-![Divisor exportado pelo KiCad](divider-after.png)
+### Cadeia horizontal
 
-R1/R2 estão alinhados verticalmente. Reference e Value estão horizontais, ao lado
-dos corpos. VOUT fica entre os resistores. O label GND, junto ao terminal inferior,
-colide com o corpo de J2; esse resultado ainda não atende à regra de clearance dos labels.
+![Cadeia horizontal corrigida](horizontal-clearance.png)
 
-## Circuito denso
+O pequeno desvio de VIN contorna o corpo de J1. R1/R2/R3 permanecem horizontais,
+com Reference/Value legíveis. O teste que exige os três resistores horizontais
+permanece ativo; a regressão inicial detectada durante a correção foi resolvida
+adicionando faixas próximas aos obstáculos, sem relaxar o critério de orientação.
 
-Antes da orientação de R9:
+### Divisor vertical
 
-![Denso antes da orientação](dense-before.png)
+![Divisor vertical corrigido](divider-clearance.png)
 
-Depois:
+GND foi afastado do corpo de J2 ao longo do próprio fio. R1/R2 estão alinhados,
+com os campos ao lado do corpo e sem sobreposição com o fio vertical.
 
-![Denso depois da orientação](dense-after.png)
+### Denso
 
-A rotação libera os campos de R9, antes atravessados por fios. Os demais componentes
-continuam onde estavam. Entretanto, a net SENSE ainda atravessa o corpo de R7;
-na imagem final a junction dessa net aparece dentro do corpo. O fio também segue
-sobre a borda superior de R8. A colisão em R7 já estava presente no baseline e
-não é eliminada pela orientação do alvo.
+![Denso corrigido](dense-clearance.png)
 
-Esses contatos com desenhos dos corpos são problemas de representação: não são
-crossings ortogonais comuns entre fios. A correção deve preservar a permissão de
-crossings interior/interior sem junction e bloquear os contatos elétricos proibidos.
+SENSE contorna R7/R8 e não atravessa Reference/Value de R7. A junction ficou fora
+dos corpos. VIN, VOUT, FB, SENSE e GND estão legíveis, afastados de corpos e campos.
+Os cruzamentos sem junction continuam representando nets distintas.
 
-## Verificação elétrica e limites
+## Verificações
 
-- Exportação estrita antes/depois, `validation["blocking"] == false` e
-  `semantic_violations == []`; nenhum `FOREIGN_PIN_GEOMETRY_CONTACT`.
-- Netlists exportadas pelo KiCad antes/depois correspondem exatamente às nets e
-  aos pinos declarados, inclusive VIN/SENSE de R9; nenhuma união elétrica acidental.
-- CI confirmou os textos Reference horizontais nos SVGs reais; Reference/Value
-  também foram inspecionados visualmente nas imagens acima.
-- O ERC apresenta avisos `lib_symbol_issues` da configuração das tabelas de
-  bibliotecas do runner, sem erros elétricos bloqueantes. Não foi um ERC sem avisos.
-- O validador atual não torna essas colisões gráficas bloqueantes; CI verde não
-  substitui o aceite visual.
+- 13 regressões específicas de corpos, labels, pins reais, rotação, preservação,
+  propriedade de nets em crossings e desvio curto da cadeia horizontal.
+- Testes locais: 309 passaram na suíte sem o smoke HTTP, com 11 testes
+  ignorados no ambiente local; o smoke HTTP passou separadamente. Ruff e mypy passaram.
+- Exportações estritas e netlists reais antes/depois do divisor e do denso; as nets
+  correspondem exatamente aos pinos do Circuit IR.
+- `validation["blocking"] == false`, `semantic_violations == []` e
+  `visual_violations == []` nos cenários finais; nenhum contato com pin estrangeiro.
+- Verificação independente das dimensões dos resistores nos arquivos exportados,
+  além da revisão das imagens acima.
+- Os avisos `lib_symbol_issues` da configuração de bibliotecas do runner permanecem
+  visíveis; não foram ocultados nem apresentados como ERC sem avisos.
 
-Pendências concretas: afastar GND do corpo de J2 sem soltar o label da net;
-rotear SENSE fora dos corpos de R7/R8, preservando os demais componentes;
-repetir a comparação e o aceite local antes do merge.
+## Reteste no Windows
 
-## Reproduzir no Windows
-
-Com o MCP atualizado e reiniciado usando o backend `memory`, execute em outro
-PowerShell, na raiz do repositório:
+Pare o servidor MCP, atualize a branch na raiz de `C:\Users\xales\coppermind`:
 
 ```powershell
+git switch feat/flow-oriented-components
+git pull --ff-only origin feat/flow-oriented-components
+```
+
+Reinicie o MCP com backend `memory` e KiCad no PATH. Em outro PowerShell:
+
+```powershell
+& .\.venv\Scripts\python.exe .\examples\flow_orientation_mcp.py
 & .\.venv\Scripts\python.exe .\examples\flow_visual_validation_mcp.py
+Invoke-Item .\flow_orientation_demo.kicad_sch
 Invoke-Item .\flow_visual_validation\divider_after.kicad_sch
-Invoke-Item .\flow_visual_validation\dense_before.kicad_sch
 Invoke-Item .\flow_visual_validation\dense_after.kicad_sch
 ```
 
-O script usa tools MCP semânticas e exportação incremental. A leitura das
-coordenadas exportadas serve apenas para verificar preservação e comprimento;
-não há criação manual de fios nem alteração da arquitetura do roteador.
+Após a revisão local dos três resultados, o PR poderá seguir para aceite e merge.
