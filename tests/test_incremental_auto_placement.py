@@ -60,15 +60,45 @@ def test_auto_placement_prefers_shorter_connected_direction(tmp_path: Path):
 
     assert result["ok"] is True
     assert result["chosen_direction"] == "below"
+    assert result["chosen_gap_mm"] in {20.32, 25.4, 38.1, 50.8}
     assert result["locked"] is True
     assert result["rerouted_nets"] == ["SIG"]
-    assert len(result["candidates"]) == 4
+    assert len(result["candidates"]) == 16
+    assert {item["gap_mm"] for item in result["candidates"]} == {
+        20.32,
+        25.4,
+        38.1,
+        50.8,
+    }
     assert all("score" in item for item in result["candidates"] if item["ok"])
 
     r1 = next(symbol for symbol in session.require_schematic().symbols if symbol.reference == "R1")
     r2 = next(symbol for symbol in session.require_schematic().symbols if symbol.reference == "R2")
     assert r2.x == r1.x
     assert r2.y > r1.y
+
+
+def test_auto_placement_rejects_candidates_outside_sheet_margin(tmp_path: Path):
+    session = _session(tmp_path)
+    project_create(session, "auto_place_bounds", 120, 100)
+    create_net(session, "SIG")
+    component_add(session, "R1", "Device:R", value="10k")
+    component_add(session, "R2", "Device:R", value="10k")
+    connect_pins(session, "SIG", ["R1.2", "R2.1"])
+
+    result = component_place_auto(session, "R2", "R1", gap_mm=25.4)
+
+    above = [item for item in result["candidates"] if item["direction"] == "above"]
+    assert len(above) == 4
+    assert all(item["ok"] is False for item in above)
+    assert all("leaves usable A4 sheet area" in item["error"] for item in above)
+    assert result["chosen_direction"] != "above"
+
+    target = next(
+        symbol for symbol in session.require_schematic().symbols if symbol.reference == "R2"
+    )
+    assert target.x >= 12.7
+    assert target.y >= 12.7
 
 
 def test_auto_placement_routes_semantic_only_connection(tmp_path: Path):

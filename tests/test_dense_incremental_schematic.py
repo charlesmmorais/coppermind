@@ -4,8 +4,10 @@ from pathlib import Path
 
 from coppermind.backends.memory_backend import MemoryBackend
 from coppermind.libraries import SymbolResolver
+from coppermind.schematic.composer import _pin_anchor
 from coppermind.schematic.incremental import (
     _build_two_point_dogleg,
+    _point_on_wire,
     _route_incremental_geometry,
     _route_score,
     validate_incremental_schematic,
@@ -158,6 +160,61 @@ def test_dense_incremental_build_preserves_unrelated_nets(tmp_path: Path):
 
     checkpoint = schematic_checkpoint(session, run_external=False)
     assert checkpoint["committed"] is True
+
+
+def test_incremental_route_does_not_pass_through_foreign_component_pin(tmp_path: Path):
+    """A routed net must not consume the opposite pin of a two-pin component."""
+    session = _session(tmp_path)
+    project_create(session, "foreign_pin_keepout", 140, 100)
+    create_net(session, "VOUT")
+    create_net(session, "FB")
+
+    _add(session, "R1", "10k")
+    _add(session, "R4", "100k")
+    _place(session, "R4", "R1", "right")
+    _connect(session, "VOUT", "R1.2", "R4.1")
+
+    r4_pin2 = _pin_anchor(session.require_schematic(), "R4", "2")
+    assert r4_pin2 is not None
+    vout_wires = [
+        wire for wire in session.require_schematic().wires if wire.net == "VOUT"
+    ]
+    assert vout_wires
+    assert not any(_point_on_wire(r4_pin2, wire) for wire in vout_wires)
+
+    # This was previously impossible when VOUT's shortest trunk ran through
+    # R4.2. The new foreign-pin keepout leaves that anchor available to FB.
+    _add(session, "R5", "10k")
+    _place(session, "R5", "R4", "below")
+    fb_result = _connect(session, "FB", "R4.2", "R5.1")
+    assert fb_result["route"]["route_length_mm"] > 0
+
+    validation = validate_incremental_schematic(
+        session.require_circuit(),
+        session.require_schematic(),
+        resolver=session.symbol_resolver,
+        run_external=False,
+    )
+    assert validation["blocking"] is False
+    assert not any(
+        item["type"] == "FOREIGN_PIN_GEOMETRY_CONTACT"
+        for item in validation["semantic_violations"]
+    )
+
+
+def test_route_geometry_rejects_foreign_pin_point():
+    points = [(0.0, 0.0), (50.8, 20.32)]
+    foreign_pin = (25.4, 10.16)
+
+    wires, _label, _junctions = _route_incremental_geometry(
+        "SIG",
+        points,
+        [],
+        [foreign_pin],
+    )
+
+    assert wires
+    assert not any(_point_on_wire(foreign_pin, wire) for wire in wires)
 
 
 def test_route_score_penalizes_unnecessary_envelope_expansion():
