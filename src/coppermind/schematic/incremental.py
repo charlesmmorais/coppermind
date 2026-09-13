@@ -292,7 +292,8 @@ def _foreign_net_intersections(schematic: Schematic) -> list[tuple[str, str]]:
             if left.net == right.net:
                 continue
             if _segments_intersect(left, right):
-                intersections.add(tuple(sorted((left.net, right.net))))
+                pair = (min(left.net, right.net), max(left.net, right.net))
+                intersections.add(pair)
     return sorted(intersections)
 
 
