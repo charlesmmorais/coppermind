@@ -21,6 +21,7 @@ _SOFT_CENTER_CLEARANCE = 25.4
 _GRID_MM = 2.54
 _PAGE_MARGIN_MM = 12.7
 _SOFT_EDGE_CLEARANCE_MM = 25.4
+_CONNECTED_ANCHOR_PENALTY = 5.0
 _EPS = 1e-6
 
 # KiCad drawing-sheet dimensions in landscape orientation, in millimetres.
@@ -50,6 +51,26 @@ def _impacted_nets(session: Session, reference: str) -> list[str]:
         for name, net in circuit.nets.items()
         if len(net.nodes) >= 2 and any(node.component == reference for node in net.nodes)
     )
+
+
+def _candidate_anchors(
+    session: Session,
+    reference: str,
+    preferred_anchor: str,
+    impacted_nets: list[str],
+) -> list[str]:
+    """Use the requested anchor first, then semantic neighbours as fallbacks."""
+    circuit = session.require_circuit()
+    result = [preferred_anchor]
+    for net_name in impacted_nets:
+        net = circuit.nets[net_name]
+        for node in net.nodes:
+            candidate = node.component
+            if candidate == reference or candidate in result:
+                continue
+            if candidate in circuit.components:
+                result.append(candidate)
+    return result
 
 
 def _clear_impacted_geometry(schematic: Schematic, impacted_nets: set[str]) -> None:
@@ -232,75 +253,94 @@ def component_place_auto(
     base = session.require_schematic().model_copy(deep=True)
     impacted = _impacted_nets(session, reference)
     impacted_set = set(impacted)
+    anchors_to_try = _candidate_anchors(session, reference, anchor, impacted)
     stable_bounds = _stable_bounds(base, reference, impacted_set)
 
     evaluated: list[dict[str, Any]] = []
-    successful: list[tuple[tuple[float, int, int], Schematic, dict[str, Any]]] = []
+    successful: list[tuple[tuple[float, int, int, int], Schematic, dict[str, Any]]] = []
 
-    for gap_rank, candidate_gap in enumerate(gaps_to_try):
-        for direction_rank, direction in enumerate(directions_to_try):
-            trial = base.model_copy(deep=True)
-            try:
-                placement = place_relative_geometry(
-                    trial,
-                    reference,
-                    anchor,
-                    direction=direction,
-                    gap_mm=candidate_gap,
-                )
-                proximity_penalty, nearest = _proximity_penalty(trial, reference)
+    for anchor_rank, candidate_anchor in enumerate(anchors_to_try):
+        anchor_penalty = float(anchor_rank) * _CONNECTED_ANCHOR_PENALTY
+        for gap_rank, candidate_gap in enumerate(gaps_to_try):
+            for direction_rank, direction in enumerate(directions_to_try):
+                trial = base.model_copy(deep=True)
+                try:
+                    placement = place_relative_geometry(
+                        trial,
+                        reference,
+                        candidate_anchor,
+                        direction=direction,
+                        gap_mm=candidate_gap,
+                    )
+                    proximity_penalty, nearest = _proximity_penalty(trial, reference)
 
-                # Do not let stale geometry from another impacted net constrain this
-                # candidate. Unrelated accepted nets stay untouched and remain hard
-                # obstacles. Impacted nets are then rebuilt deterministically.
-                _clear_impacted_geometry(trial, impacted_set)
-                routes = [
-                    route_net_incremental(circuit, trial, net_name)
-                    for net_name in impacted
-                ]
+                    # Do not let stale geometry from another impacted net constrain this
+                    # candidate. Unrelated accepted nets stay untouched and remain hard
+                    # obstacles. Impacted nets are then rebuilt deterministically.
+                    _clear_impacted_geometry(trial, impacted_set)
+                    routes = [
+                        route_net_incremental(circuit, trial, net_name)
+                        for net_name in impacted
+                    ]
 
-                bounds = _candidate_bounds(trial)
-                edge_penalty, edge_clearance = _page_clearance(trial, bounds)
-                route_score = sum(float(item.get("route_score", 0.0)) for item in routes)
-                route_length = sum(float(item.get("route_length_mm", 0.0)) for item in routes)
-                route_bends = sum(int(item.get("route_bends", 0)) for item in routes)
-                expansion = _envelope_expansion(stable_bounds, bounds)
-                total = route_score + expansion * 3.0 + proximity_penalty + edge_penalty
-                summary: dict[str, Any] = {
-                    "direction": direction,
-                    "gap_mm": round(candidate_gap, 3),
-                    "ok": True,
-                    "score": round(total, 3),
-                    "route_score": round(route_score, 3),
-                    "route_length_mm": round(route_length, 3),
-                    "route_bends": route_bends,
-                    "envelope_expansion_mm": round(expansion, 3),
-                    "proximity_penalty": round(proximity_penalty, 3),
-                    "edge_penalty": round(edge_penalty, 3),
-                    "edge_clearance_mm": (
-                        round(edge_clearance, 3) if edge_clearance is not None else None
-                    ),
-                    "nearest_component_mm": round(nearest, 3) if nearest is not None else None,
-                    "to": placement["to"],
-                    "rerouted_nets": impacted,
-                }
-                evaluated.append(summary)
-                successful.append(
-                    ((total, gap_rank, direction_rank), trial, summary)
-                )
-            except Exception as exc:
-                evaluated.append(
-                    {
+                    bounds = _candidate_bounds(trial)
+                    edge_penalty, edge_clearance = _page_clearance(trial, bounds)
+                    route_score = sum(float(item.get("route_score", 0.0)) for item in routes)
+                    route_length = sum(float(item.get("route_length_mm", 0.0)) for item in routes)
+                    route_bends = sum(int(item.get("route_bends", 0)) for item in routes)
+                    expansion = _envelope_expansion(stable_bounds, bounds)
+                    total = (
+                        route_score
+                        + expansion * 3.0
+                        + proximity_penalty
+                        + edge_penalty
+                        + anchor_penalty
+                    )
+                    summary: dict[str, Any] = {
+                        "anchor": candidate_anchor,
                         "direction": direction,
                         "gap_mm": round(candidate_gap, 3),
-                        "ok": False,
-                        "error": str(exc),
+                        "ok": True,
+                        "score": round(total, 3),
+                        "route_score": round(route_score, 3),
+                        "route_length_mm": round(route_length, 3),
+                        "route_bends": route_bends,
+                        "envelope_expansion_mm": round(expansion, 3),
+                        "proximity_penalty": round(proximity_penalty, 3),
+                        "edge_penalty": round(edge_penalty, 3),
+                        "anchor_penalty": round(anchor_penalty, 3),
+                        "edge_clearance_mm": (
+                            round(edge_clearance, 3) if edge_clearance is not None else None
+                        ),
+                        "nearest_component_mm": (
+                            round(nearest, 3) if nearest is not None else None
+                        ),
+                        "to": placement["to"],
+                        "rerouted_nets": impacted,
                     }
-                )
+                    evaluated.append(summary)
+                    successful.append(
+                        (
+                            (total, anchor_rank, gap_rank, direction_rank),
+                            trial,
+                            summary,
+                        )
+                    )
+                except Exception as exc:
+                    evaluated.append(
+                        {
+                            "anchor": candidate_anchor,
+                            "direction": direction,
+                            "gap_mm": round(candidate_gap, 3),
+                            "ok": False,
+                            "error": str(exc),
+                        }
+                    )
 
     if not successful:
         errors = "; ".join(
-            f"{item['direction']}@{item['gap_mm']}mm: {item.get('error', 'rejected')}"
+            f"{item['anchor']}:{item['direction']}@{item['gap_mm']}mm: "
+            f"{item.get('error', 'rejected')}"
             for item in evaluated
         )
         raise RuntimeError(f"no legal automatic placement for '{reference}': {errors}")
@@ -316,6 +356,7 @@ def component_place_auto(
         "ok": True,
         "reference": reference,
         "anchor": anchor,
+        "chosen_anchor": best["anchor"],
         "gap_mm": gap_mm,
         "chosen_gap_mm": best["gap_mm"],
         "chosen_direction": best["direction"],
