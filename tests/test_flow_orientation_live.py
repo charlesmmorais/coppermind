@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -75,6 +76,9 @@ def test_rotated_pin_identity_matches_real_kicad_netlist(tmp_path: Path, rotatio
 
     output = tmp_path / "rotation_identity.kicad_sch"
     result = schematic_export_current(session, str(output))
+    if result["validation"]["blocking"]:
+        print(json.dumps(result, indent=2))
+        print(session.require_schematic().model_dump_json(indent=2))
     assert result["validation"]["kicad"]["available"] is True, result
     assert result["validation"]["blocking"] is False, result
     assert result["validated"] is True, result
