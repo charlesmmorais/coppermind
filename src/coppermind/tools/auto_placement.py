@@ -59,9 +59,11 @@ def _candidate_anchors(
     preferred_anchor: str,
     impacted_nets: list[str],
 ) -> list[str]:
-    """Use the requested anchor first, then semantic neighbours as fallbacks."""
+    """Prefer semantic neighbours, then use other stable components as fallbacks."""
     circuit = session.require_circuit()
     result = [preferred_anchor]
+
+    # First try components that share one of the moved component's semantic nets.
     for net_name in impacted_nets:
         net = circuit.nets[net_name]
         for node in net.nodes:
@@ -70,6 +72,14 @@ def _candidate_anchors(
                 continue
             if candidate in circuit.components:
                 result.append(candidate)
+
+    # Dense layouts can box in every electrically adjacent anchor. Falling back
+    # to any accepted component only changes the geometric reference point; the
+    # routed semantic nets and their electrical meaning remain unchanged.
+    for candidate in circuit.components:
+        if candidate == reference or candidate in result:
+            continue
+        result.append(candidate)
     return result
 
 
@@ -180,13 +190,14 @@ def _snap_gap(value: float) -> float:
 
 
 def _candidate_gaps(preferred_gap_mm: float) -> list[float]:
-    """Try the requested spacing plus compact and relaxed local alternatives."""
+    """Try requested, compact, relaxed, and far local spacings deterministically."""
     if preferred_gap_mm <= 0:
         raise ValueError("gap_mm must be greater than zero")
     minimum = _GRID_MM * 5.0
     compact = max(minimum, preferred_gap_mm - _GRID_MM * 2.0)
     relaxed = preferred_gap_mm + _GRID_MM * 5.0
-    raw = (preferred_gap_mm, compact, relaxed)
+    far = preferred_gap_mm + _GRID_MM * 10.0
+    raw = (preferred_gap_mm, compact, relaxed, far)
     result: list[float] = []
     for value in raw:
         snapped = _snap_gap(value)
