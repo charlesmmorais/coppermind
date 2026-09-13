@@ -205,6 +205,61 @@ def _route_collides(wires: list[Wire], foreign_wires: list[Wire]) -> bool:
     )
 
 
+def _route_length(wires: list[Wire]) -> float:
+    return sum(abs(wire.x2 - wire.x1) + abs(wire.y2 - wire.y1) for wire in wires)
+
+
+def _route_bounds(
+    wires: list[Wire],
+    points: list[tuple[float, float]],
+) -> tuple[float, float, float, float]:
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    for wire in wires:
+        xs.extend((wire.x1, wire.x2))
+        ys.extend((wire.y1, wire.y2))
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _reference_bounds(
+    points: list[tuple[float, float]],
+    foreign_wires: list[Wire],
+) -> tuple[float, float, float, float]:
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    for wire in foreign_wires:
+        xs.extend((wire.x1, wire.x2))
+        ys.extend((wire.y1, wire.y2))
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _route_score(
+    wires: list[Wire],
+    points: list[tuple[float, float]],
+    foreign_wires: list[Wire],
+) -> tuple[float, float, float, int]:
+    """Score collision-free geometry for compact, stable incremental routing.
+
+    Expansion outside the already occupied design envelope is deliberately more
+    expensive than a small increase in wire length.  This prevents the router
+    from choosing the first legal escape lane when a similarly short route can
+    stay inside the existing drawing.  Segment count is a deterministic proxy
+    for bends/visual complexity.
+    """
+    length = _route_length(wires)
+    bends = max(0, len(wires) - 1)
+    route_min_x, route_min_y, route_max_x, route_max_y = _route_bounds(wires, points)
+    ref_min_x, ref_min_y, ref_max_x, ref_max_y = _reference_bounds(points, foreign_wires)
+    expansion = (
+        max(0.0, ref_min_x - route_min_x)
+        + max(0.0, route_max_x - ref_max_x)
+        + max(0.0, ref_min_y - route_min_y)
+        + max(0.0, route_max_y - ref_max_y)
+    )
+    total = length + expansion * 4.0 + bends * _GRID
+    return total, expansion, length, bends
+
+
 def _candidate_detours(a: float, b: float) -> list[float]:
     """Return deterministic clearance lanes outside a segment's bounding range."""
     low, high = min(a, b), max(a, b)
@@ -257,18 +312,16 @@ def _build_two_point_dogleg(
     return wires, label, []
 
 
-def _route_two_point_dogleg(
+def _two_point_dogleg_candidates(
     name: str,
     points: list[tuple[float, float]],
     foreign_wires: list[Wire],
-) -> tuple[list[Wire], NetLabel, list[Junction]] | None:
-    """Find a collision-free outer lane when the direct/trunk route is blocked."""
+) -> list[tuple[list[Wire], NetLabel, list[Junction]]]:
+    """Return every collision-free outer dogleg candidate for a two-point net."""
     if len(points) != 2:
-        return None
+        return []
     a, b = points
-
-    # Prefer a Y detour for horizontally separated endpoints and an X detour
-    # for vertically separated endpoints, then try the alternate axis.
+    result: list[tuple[list[Wire], NetLabel, list[Junction]]] = []
     axes = ("y", "x") if abs(a[0] - b[0]) >= abs(a[1] - b[1]) else ("x", "y")
     for axis in axes:
         values = (
@@ -285,8 +338,8 @@ def _route_two_point_dogleg(
                 detour_x=value if axis == "x" else None,
             )
             if not _route_collides(candidate[0], foreign_wires):
-                return candidate
-    return None
+                result.append(candidate)
+    return result
 
 
 def _route_incremental_geometry(
@@ -294,7 +347,12 @@ def _route_incremental_geometry(
     endpoints: list[tuple[float, float]],
     foreign_wires: list[Wire],
 ) -> tuple[list[Wire], NetLabel, list[Junction]]:
-    """Route one net without touching geometry owned by another net."""
+    """Route one net without touching geometry owned by another net.
+
+    All legal compact-trunk and two-point dogleg candidates are scored before a
+    winner is selected.  This preserves the no-reflow incremental contract while
+    preferring shorter routes that stay inside the established drawing envelope.
+    """
     points = sorted(set((_coord(x), _coord(y)) for x, y in endpoints))
     if not points:
         raise ValueError(f"net '{name}' has no drawable endpoints")
@@ -302,17 +360,18 @@ def _route_incremental_geometry(
         x, y = points[0]
         return [], NetLabel(text=name, x=x, y=y, net=name), []
 
-    # First preserve the compact midpoint-trunk behavior used by the baseline
-    # divider. If every trunk lane is blocked, a two-pin net may escape through
-    # an outer Manhattan dogleg without moving any already accepted symbol/net.
+    candidates: list[tuple[list[Wire], NetLabel, list[Junction]]] = []
     for trunk_x in _candidate_trunk_xs(points):
-        wires, label, junctions = _build_trunk_route(name, points, trunk_x)
-        if not _route_collides(wires, foreign_wires):
-            return wires, label, junctions
+        candidate = _build_trunk_route(name, points, trunk_x)
+        if not _route_collides(candidate[0], foreign_wires):
+            candidates.append(candidate)
 
-    dogleg = _route_two_point_dogleg(name, points, foreign_wires)
-    if dogleg is not None:
-        return dogleg
+    candidates.extend(_two_point_dogleg_candidates(name, points, foreign_wires))
+    if candidates:
+        return min(
+            candidates,
+            key=lambda candidate: _route_score(candidate[0], points, foreign_wires),
+        )
 
     raise RuntimeError(
         f"cannot route net '{name}' without touching existing foreign-net geometry; "
@@ -362,12 +421,21 @@ def route_net_incremental(circuit: Circuit, schematic: Schematic, net_name: str)
         schematic.labels.append(label)
     schematic.junctions.extend(junctions)
 
+    route_score, route_expansion, route_length, route_bends = _route_score(
+        wires,
+        sorted(set((_coord(x), _coord(y)) for x, y in endpoints)),
+        foreign_wires,
+    )
     return {
         "net": net_name,
         "pins": [node.key() for node in net.nodes],
         "wires": len(wires),
         "labels": 0 if _net_has_named_power_symbol(circuit, net_name) else 1,
         "junctions": len(junctions),
+        "route_length_mm": round(route_length, 3),
+        "route_expansion_mm": round(route_expansion, 3),
+        "route_bends": route_bends,
+        "route_score": round(route_score, 3),
     }
 
 
