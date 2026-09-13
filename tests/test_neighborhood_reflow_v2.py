@@ -52,7 +52,13 @@ def test_reflow_v2_shortens_late_component_focus_nets(tmp_path: Path):
     for name in ("VIN", "VOUT", "SENSE"):
         create_net(session, name)
 
-    for reference, value in (("R1", "10k"), ("R7", "4.7k"), ("R8", "1k"), ("R9", "100k"), ("R99", "1M")):
+    for reference, value in (
+        ("R1", "10k"),
+        ("R7", "4.7k"),
+        ("R8", "1k"),
+        ("R9", "100k"),
+        ("R99", "1M"),
+    ):
         component_add(session, reference, "Device:R", value=value)
 
     _set_position(session, "R1", 50.8, 50.8)
@@ -73,6 +79,10 @@ def test_reflow_v2_shortens_late_component_focus_nets(tmp_path: Path):
     frozen_before = next(
         (item.x, item.y) for item in schematic.symbols if item.reference == "R99"
     )
+    r9_before = next(
+        (item.x, item.y) for item in schematic.symbols if item.reference == "R9"
+    )
+
     result = component_reflow_neighborhood(
         session,
         "R9",
@@ -84,10 +94,21 @@ def test_reflow_v2_shortens_late_component_focus_nets(tmp_path: Path):
 
     assert result["ok"] is True
     assert result["improved"] is True
+    assert result["target_first"] is True
     assert set(result["focus_nets"]) == {"SENSE", "VIN"}
-    assert result["final"]["focus_route_length_mm"] < result["baseline"]["focus_route_length_mm"]
+    assert result["focus_route_length_mm"] < result["baseline_focus_route_length_mm"]
+    # The deliberately stranded R9 must improve materially, not just by one grid step.
+    assert result["focus_route_gain_mm"] >= 25.4
     assert "R9" in result["moved_components"]
     assert result["target_slot_candidates"] > 0
+    assert result["target_to"] != result["target_from"]
+
+    r9_after = next(
+        (item.x, item.y)
+        for item in session.require_schematic().symbols
+        if item.reference == "R9"
+    )
+    assert r9_after != r9_before
 
     frozen_after = next(
         (item.x, item.y)
