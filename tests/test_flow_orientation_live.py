@@ -163,3 +163,56 @@ def test_exact_mcp_flow_demo_passes_strict_erc_and_netlist(tmp_path: Path):
     assert {placements[r][1] for r in ("R1", "R2", "R3")} == {placements["R1"][1]}
     assert all(placements[r][2] == 90 for r in ("R1", "R2", "R3"))
     _assert_rendered_fields_are_horizontal(output, {"R1", "R2", "R3", "10k", "22k", "47k"})
+
+
+def test_visual_divider_and_dense_mcp_cases(tmp_path: Path, monkeypatch):
+    """Keep actual KiCad renderings and exact netlists of both review stages."""
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    monkeypatch.syspath_prepend(str(examples))
+    from flow_visual_validation_mcp import build_cases
+
+    output = Path(os.environ.get("COPPERMIND_VISUAL_ARTIFACTS", str(tmp_path)))
+
+    async def run():
+        server = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "coppermind.server", "--transport", "stdio"],
+            env={**os.environ, "COPPERMIND_BACKEND": "memory"},
+        )
+        async with stdio_client(server) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                return await build_cases(session, output)
+
+    report = asyncio.run(asyncio.wait_for(run(), timeout=300))
+    expected = {
+        "divider": {
+            "VIN": {("J1", "1"), ("R1", "1")},
+            "VOUT": {("R1", "2"), ("R2", "1")},
+            "GND": {("R2", "2"), ("J2", "1")},
+        },
+        "dense": {
+            "VIN": {("R1", "1"), ("R9", "1")},
+            "VOUT": {("R1", "2"), ("R2", "1"), ("R3", "1"), ("R4", "1"), ("R7", "1")},
+            "FB": {("R4", "2"), ("R5", "1"), ("R6", "1")},
+            "SENSE": {("R7", "2"), ("R8", "1"), ("R9", "2")},
+            "GND": {("R2", "2"), ("R3", "2"), ("R5", "2"), ("R6", "2"), ("R8", "2")},
+        },
+    }
+    for case in ("divider", "dense"):
+        assert report[case]["validation"]["blocking"] is False
+        assert report[case]["validation"]["kicad"]["available"] is True
+        for stage in ("before", "after"):
+            path = output / f"{case}_{stage}.kicad_sch"
+            assert _exported_pin_sets(path) == expected[case]
+            references = set(report[case][stage]["symbols"])
+            _assert_rendered_fields_are_horizontal(path, references)
+    for result in report["divider"]["orientations"].values():
+        assert {c["rotation"] for c in result["candidates"]} == {0, 90, 180, 270}
+        assert result["display_axis"] == "vertical"
+    assert {c["rotation"] for c in report["dense"]["orientation"]["candidates"]} == {
+        0,
+        90,
+        180,
+        270,
+    }

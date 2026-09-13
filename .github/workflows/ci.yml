@@ -52,4 +52,12 @@ jobs:
       - name: Run integration tests
         env:
           COPPERMIND_BACKEND: ipc
+          COPPERMIND_VISUAL_ARTIFACTS: artifacts/flow-visual
         run: pytest -m integration
+      - name: Upload flow visual review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flow-visual-review
+          path: artifacts/flow-visual/
+          if-no-files-found: warn
