@@ -20,6 +20,7 @@ from coppermind.session import Session
 from coppermind.tools.circuit import (
     component_add,
     connect_incremental,
+    create_net,
     schematic_export_current,
 )
 from coppermind.tools.core import project_create
@@ -67,6 +68,8 @@ def test_rotated_pin_identity_matches_real_kicad_netlist(tmp_path: Path, rotatio
     component_add(session, "J2", "Connector_Generic:Conn_01x01", value="OUTPUT")
     target = next(s for s in session.require_schematic().symbols if s.reference == "R1")
     target.rotation = rotation
+    create_net(session, "VIN")
+    create_net(session, "VOUT")
     connect_incremental(session, "VIN", ["J1.1", "R1.1"])
     connect_incremental(session, "VOUT", ["R1.2", "J2.1"])
 
