@@ -51,8 +51,13 @@ def _connect(session: Session, net: str, *pins: str) -> None:
 def _place(session: Session, reference: str, anchor: str) -> dict:
     result = component_place_auto(session, reference, anchor, gap_mm=25.4)
     assert result["ok"] is True
-    assert result["chosen_direction"] in {"right", "below", "above", "left"}
-    assert result["chosen_gap_mm"] in {20.32, 25.4, 38.1, 50.8}
+    assert result["chosen_mode"] in {"relative", "free-space"}
+    if result["chosen_mode"] == "relative":
+        assert result["chosen_direction"] in {"right", "below", "above", "left"}
+        assert result["chosen_gap_mm"] in {20.32, 25.4, 38.1, 50.8}
+    else:
+        assert result["chosen_direction"] is None
+        assert result["chosen_gap_mm"] is None
     assert any(candidate.get("ok") for candidate in result["candidates"])
     return result
 
