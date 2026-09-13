@@ -134,6 +134,15 @@ def _segments_intersect(left: Wire, right: Wire) -> bool:
     )
 
 
+def _point_on_wire(point: tuple[float, float], wire: Wire) -> bool:
+    """Return whether an electrical pin anchor lies on one wire segment."""
+    x, y = point
+    vertical = math.isclose(wire.x1, wire.x2, abs_tol=_EPS)
+    if vertical:
+        return math.isclose(x, wire.x1, abs_tol=_EPS) and _between(y, wire.y1, wire.y2)
+    return math.isclose(y, wire.y1, abs_tol=_EPS) and _between(x, wire.x1, wire.x2)
+
+
 def _candidate_trunk_xs(points: list[tuple[float, float]]) -> list[float]:
     xs = [x for x, _ in points]
     min_x, max_x = min(xs), max(xs)
@@ -197,12 +206,19 @@ def _build_trunk_route(
     return wires, NetLabel(text=name, x=label_x, y=label_y, net=name), junctions
 
 
-def _route_collides(wires: list[Wire], foreign_wires: list[Wire]) -> bool:
-    return any(
+def _route_collides(
+    wires: list[Wire],
+    foreign_wires: list[Wire],
+    foreign_points: list[tuple[float, float]] | None = None,
+) -> bool:
+    if any(
         _segments_intersect(candidate, foreign)
         for candidate in wires
         for foreign in foreign_wires
-    )
+    ):
+        return True
+    obstacles = foreign_points or []
+    return any(_point_on_wire(point, wire) for wire in wires for point in obstacles)
 
 
 def _route_length(wires: list[Wire]) -> float:
@@ -316,6 +332,7 @@ def _two_point_dogleg_candidates(
     name: str,
     points: list[tuple[float, float]],
     foreign_wires: list[Wire],
+    foreign_points: list[tuple[float, float]] | None = None,
 ) -> list[tuple[list[Wire], NetLabel, list[Junction]]]:
     """Return every collision-free outer dogleg candidate for a two-point net."""
     if len(points) != 2:
@@ -337,7 +354,7 @@ def _two_point_dogleg_candidates(
                 detour_y=value if axis == "y" else None,
                 detour_x=value if axis == "x" else None,
             )
-            if not _route_collides(candidate[0], foreign_wires):
+            if not _route_collides(candidate[0], foreign_wires, foreign_points):
                 result.append(candidate)
     return result
 
@@ -346,12 +363,14 @@ def _route_incremental_geometry(
     name: str,
     endpoints: list[tuple[float, float]],
     foreign_wires: list[Wire],
+    foreign_points: list[tuple[float, float]] | None = None,
 ) -> tuple[list[Wire], NetLabel, list[Junction]]:
-    """Route one net without touching geometry owned by another net.
+    """Route one net without touching foreign wires or foreign pin anchors.
 
     All legal compact-trunk and two-point dogleg candidates are scored before a
-    winner is selected.  This preserves the no-reflow incremental contract while
-    preferring shorter routes that stay inside the established drawing envelope.
+    winner is selected. This preserves the no-reflow incremental contract while
+    preventing a wire from silently crossing another pin on the way to its own
+    endpoint.
     """
     points = sorted(set((_coord(x), _coord(y)) for x, y in endpoints))
     if not points:
@@ -363,10 +382,12 @@ def _route_incremental_geometry(
     candidates: list[tuple[list[Wire], NetLabel, list[Junction]]] = []
     for trunk_x in _candidate_trunk_xs(points):
         candidate = _build_trunk_route(name, points, trunk_x)
-        if not _route_collides(candidate[0], foreign_wires):
+        if not _route_collides(candidate[0], foreign_wires, foreign_points):
             candidates.append(candidate)
 
-    candidates.extend(_two_point_dogleg_candidates(name, points, foreign_wires))
+    candidates.extend(
+        _two_point_dogleg_candidates(name, points, foreign_wires, foreign_points)
+    )
     if candidates:
         return min(
             candidates,
@@ -374,9 +395,29 @@ def _route_incremental_geometry(
         )
 
     raise RuntimeError(
-        f"cannot route net '{name}' without touching existing foreign-net geometry; "
-        "reposition a component or increase placement clearance"
+        f"cannot route net '{name}' without touching existing foreign-net geometry "
+        "or a foreign pin anchor; reposition a component or increase placement clearance"
     )
+
+
+def _foreign_pin_points_for_net(
+    circuit: Circuit,
+    schematic: Schematic,
+    net_name: str,
+) -> list[tuple[float, float]]:
+    """Return drawable pin anchors that are not members of the routed net."""
+    net = circuit.nets[net_name]
+    own = {node.key() for node in net.nodes}
+    points: set[tuple[float, float]] = set()
+    for reference, component in circuit.components.items():
+        for pin in component.pins.values():
+            key = f"{reference}.{pin.number}"
+            if key in own:
+                continue
+            anchor = _pin_anchor(schematic, reference, pin.number)
+            if anchor is not None:
+                points.add((_coord(anchor[0]), _coord(anchor[1])))
+    return sorted(points)
 
 
 def route_net_incremental(circuit: Circuit, schematic: Schematic, net_name: str) -> dict:
@@ -410,7 +451,13 @@ def route_net_incremental(circuit: Circuit, schematic: Schematic, net_name: str)
         )
 
     foreign_wires = [wire for wire in schematic.wires if wire.net and wire.net != net_name]
-    wires, label, junctions = _route_incremental_geometry(net_name, endpoints, foreign_wires)
+    foreign_points = _foreign_pin_points_for_net(circuit, schematic, net_name)
+    wires, label, junctions = _route_incremental_geometry(
+        net_name,
+        endpoints,
+        foreign_wires,
+        foreign_points,
+    )
 
     schematic.wires = [wire for wire in schematic.wires if wire.net != net_name]
     schematic.labels = [item for item in schematic.labels if item.net != net_name]
@@ -459,6 +506,30 @@ def _foreign_net_intersections(schematic: Schematic) -> list[tuple[str, str]]:
     return sorted(intersections)
 
 
+def _foreign_pin_contacts(
+    circuit: Circuit,
+    schematic: Schematic,
+) -> list[tuple[str, str]]:
+    """Find wires that touch a pin which is not a member of that wire's net."""
+    contacts: set[tuple[str, str]] = set()
+    owned_wires = [wire for wire in schematic.wires if wire.net]
+    for wire in owned_wires:
+        assert wire.net is not None
+        net = circuit.nets.get(wire.net)
+        if net is None:
+            continue
+        own = {node.key() for node in net.nodes}
+        for reference, component in circuit.components.items():
+            for pin in component.pins.values():
+                key = f"{reference}.{pin.number}"
+                if key in own:
+                    continue
+                anchor = _pin_anchor(schematic, reference, pin.number)
+                if anchor is not None and _point_on_wire(anchor, wire):
+                    contacts.add((wire.net, key))
+    return sorted(contacts)
+
+
 def _incremental_semantic_violations(circuit: Circuit, schematic: Schematic) -> list[dict]:
     violations = [
         {"severity": "error", "type": "INVALID_REFERENCE", "description": message}
@@ -480,6 +551,16 @@ def _incremental_semantic_violations(circuit: Circuit, schematic: Schematic) -> 
                 "severity": "error",
                 "type": "FOREIGN_NET_GEOMETRY_INTERSECTION",
                 "description": f"incremental geometry for nets '{left}' and '{right}' touches or overlaps",
+            }
+        )
+    for net_name, pin_key in _foreign_pin_contacts(circuit, schematic):
+        violations.append(
+            {
+                "severity": "error",
+                "type": "FOREIGN_PIN_GEOMETRY_CONTACT",
+                "description": (
+                    f"incremental geometry for net '{net_name}' touches foreign pin '{pin_key}'"
+                ),
             }
         )
     return violations
