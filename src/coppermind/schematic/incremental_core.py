@@ -219,7 +219,8 @@ def _build_trunk_route(
         label_x = _coord((points[0][0] + points[1][0]) / 2.0)
         label_y = points[0][1]
     elif len(points) == 2 and math.isclose(points[0][0], points[1][0], abs_tol=_EPS):
-        label_x = points[0][0]
+        # A detour moves the trunk away from the collinear pins.
+        label_x = trunk_x
         label_y = _coord((points[0][1] + points[1][1]) / 2.0)
     else:
         label_x = trunk_x
@@ -258,7 +259,8 @@ def _build_horizontal_trunk_route(
 
     if len(points) == 2 and math.isclose(points[0][1], points[1][1], abs_tol=_EPS):
         label_x = _coord((points[0][0] + points[1][0]) / 2.0)
-        label_y = points[0][1]
+        # Keep the label on the actual trunk, including off-axis detours.
+        label_y = trunk_y
     elif len(points) == 2 and math.isclose(points[0][0], points[1][0], abs_tol=_EPS):
         label_x = points[0][0]
         label_y = _coord((points[0][1] + points[1][1]) / 2.0)

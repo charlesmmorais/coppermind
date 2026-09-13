@@ -11,6 +11,11 @@ from coppermind.schematic.models import (
     SchSymbol,
 )
 from coppermind.schematic.visual_review import _symbol_bounds
+from coppermind.schematic.incremental import (
+    _build_horizontal_trunk_route,
+    _build_trunk_route,
+    _point_on_wire,
+)
 from coppermind.serialize.kicad_sch import _symbol_body_box
 
 
@@ -40,3 +45,15 @@ def test_asymmetric_common_pin_matches_kicad_sheet_transform(rotation, offset):
     for box in (_symbol_bounds(schematic, symbol), _symbol_body_box(symbol, library)):
         assert (box[0] + box[2]) / 2 == pytest.approx(expected[0])
         assert (box[1] + box[3]) / 2 == pytest.approx(expected[1])
+
+
+@pytest.mark.parametrize(
+    "builder, points, trunk",
+    [
+        (_build_horizontal_trunk_route, [(20.32, 25.4), (67.31, 25.4)], 15.24),
+        (_build_trunk_route, [(25.4, 20.32), (25.4, 67.31)], 15.24),
+    ],
+)
+def test_rotated_pin_detour_keeps_label_on_routed_wire(builder, points, trunk):
+    wires, label, _ = builder("SIGNAL", points, trunk)
+    assert any(_point_on_wire((label.x, label.y), wire) for wire in wires)
