@@ -31,7 +31,7 @@ _EPS = 1e-6
 
 def _component_graph(session: Session) -> dict[str, set[str]]:
     circuit = session.require_circuit()
-    graph = {reference: set() for reference in circuit.components}
+    graph: dict[str, set[str]] = {reference: set() for reference in circuit.components}
     for net in circuit.nets.values():
         refs = sorted({node.component for node in net.nodes if node.component in graph})
         for index, left in enumerate(refs):
