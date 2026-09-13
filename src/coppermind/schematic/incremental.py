@@ -16,10 +16,9 @@ from coppermind.safety import validate_output_path
 from coppermind.schematic.composer import (
     _net_has_named_power_symbol,
     _pin_anchor,
-    _route_net,
 )
 from coppermind.schematic.erc import run_kicad_erc
-from coppermind.schematic.models import Schematic
+from coppermind.schematic.models import Junction, NetLabel, Schematic, Wire
 from coppermind.serialize.kicad_sch import schematic_to_kicad_sch
 
 _GRID = 2.54
@@ -31,10 +30,15 @@ _DIRECTIONS = {
     "below": (0.0, 1.0),
 }
 _BLOCKING_SEVERITIES = {"error", "fatal"}
+_EPS = 1e-6
 
 
 def _snap(value: float) -> float:
     return round(value / _GRID) * _GRID
+
+
+def _coord(value: float) -> float:
+    return round(float(value), 6)
 
 
 def _symbol_by_ref(schematic: Schematic, reference: str):
@@ -77,6 +81,151 @@ def place_relative_geometry(
     }
 
 
+def _wire_key(wire: Wire) -> tuple[tuple[float, float], tuple[float, float]]:
+    a = (_coord(wire.x1), _coord(wire.y1))
+    b = (_coord(wire.x2), _coord(wire.y2))
+    return tuple(sorted((a, b)))  # type: ignore[return-value]
+
+
+def _append_wire(
+    target: list[Wire],
+    seen: set[tuple[tuple[float, float], tuple[float, float]]],
+    a: tuple[float, float],
+    b: tuple[float, float],
+    net_name: str,
+) -> None:
+    a = (_coord(a[0]), _coord(a[1]))
+    b = (_coord(b[0]), _coord(b[1]))
+    if a == b:
+        return
+    wire = Wire(x1=a[0], y1=a[1], x2=b[0], y2=b[1], net=net_name)
+    key = _wire_key(wire)
+    if key not in seen:
+        target.append(wire)
+        seen.add(key)
+
+
+def _between(value: float, a: float, b: float) -> bool:
+    return min(a, b) - _EPS <= value <= max(a, b) + _EPS
+
+
+def _segments_intersect(left: Wire, right: Wire) -> bool:
+    """Return whether two axis-aligned wire segments touch or overlap."""
+    left_vertical = math.isclose(left.x1, left.x2, abs_tol=_EPS)
+    right_vertical = math.isclose(right.x1, right.x2, abs_tol=_EPS)
+
+    if left_vertical and right_vertical:
+        if not math.isclose(left.x1, right.x1, abs_tol=_EPS):
+            return False
+        return max(min(left.y1, left.y2), min(right.y1, right.y2)) <= min(
+            max(left.y1, left.y2), max(right.y1, right.y2)
+        ) + _EPS
+
+    if not left_vertical and not right_vertical:
+        if not math.isclose(left.y1, right.y1, abs_tol=_EPS):
+            return False
+        return max(min(left.x1, left.x2), min(right.x1, right.x2)) <= min(
+            max(left.x1, left.x2), max(right.x1, right.x2)
+        ) + _EPS
+
+    vertical, horizontal = (left, right) if left_vertical else (right, left)
+    return _between(vertical.x1, horizontal.x1, horizontal.x2) and _between(
+        horizontal.y1, vertical.y1, vertical.y2
+    )
+
+
+def _candidate_trunk_xs(points: list[tuple[float, float]]) -> list[float]:
+    xs = [x for x, _ in points]
+    min_x, max_x = min(xs), max(xs)
+    midpoint = _snap((min_x + max_x) / 2.0)
+    candidates = [midpoint]
+
+    # Search symmetrically around the natural midpoint. Four grid steps gives
+    # enough visual clearance to avoid immediately adjacent wires/symbol pins.
+    stride = 4 * _GRID
+    for step in range(1, 9):
+        candidates.extend((midpoint + step * stride, midpoint - step * stride))
+    candidates.extend((min_x - stride, max_x + stride))
+
+    unique: list[float] = []
+    seen: set[float] = set()
+    for value in candidates:
+        snapped = _coord(_snap(value))
+        if snapped not in seen:
+            unique.append(snapped)
+            seen.add(snapped)
+    return unique
+
+
+def _build_trunk_route(
+    name: str,
+    points: list[tuple[float, float]],
+    trunk_x: float,
+) -> tuple[list[Wire], NetLabel, list[Junction]]:
+    wires: list[Wire] = []
+    seen: set[tuple[tuple[float, float], tuple[float, float]]] = set()
+    for x, y in points:
+        _append_wire(wires, seen, (x, y), (trunk_x, y), name)
+
+    ys = sorted({y for _, y in points})
+    for y0, y1 in zip(ys, ys[1:]):
+        _append_wire(wires, seen, (trunk_x, y0), (trunk_x, y1), name)
+
+    junctions: list[Junction] = []
+    if len(points) > 2:
+        min_y, max_y = ys[0], ys[-1]
+        for y in ys:
+            branches = sum(
+                1 for x, py in points if py == y and not math.isclose(x, trunk_x, abs_tol=_EPS)
+            )
+            on_trunk = sum(
+                1 for x, py in points if py == y and math.isclose(x, trunk_x, abs_tol=_EPS)
+            )
+            vertical_sides = int(y > min_y) + int(y < max_y)
+            if branches + on_trunk + vertical_sides >= 3:
+                junctions.append(Junction(x=trunk_x, y=y, net=name))
+
+    if len(points) == 2 and math.isclose(points[0][1], points[1][1], abs_tol=_EPS):
+        label_x = _coord((points[0][0] + points[1][0]) / 2.0)
+        label_y = points[0][1]
+    elif len(points) == 2 and math.isclose(points[0][0], points[1][0], abs_tol=_EPS):
+        label_x = points[0][0]
+        label_y = _coord((points[0][1] + points[1][1]) / 2.0)
+    else:
+        label_x = trunk_x
+        label_y = ys[len(ys) // 2]
+    return wires, NetLabel(text=name, x=label_x, y=label_y, net=name), junctions
+
+
+def _route_incremental_geometry(
+    name: str,
+    endpoints: list[tuple[float, float]],
+    foreign_wires: list[Wire],
+) -> tuple[list[Wire], NetLabel, list[Junction]]:
+    """Route one net with a midpoint trunk that cannot touch foreign-net wires."""
+    points = sorted(set((_coord(x), _coord(y)) for x, y in endpoints))
+    if not points:
+        raise ValueError(f"net '{name}' has no drawable endpoints")
+    if len(points) == 1:
+        x, y = points[0]
+        return [], NetLabel(text=name, x=x, y=y, net=name), []
+
+    for trunk_x in _candidate_trunk_xs(points):
+        wires, label, junctions = _build_trunk_route(name, points, trunk_x)
+        collision = any(
+            _segments_intersect(candidate, foreign)
+            for candidate in wires
+            for foreign in foreign_wires
+        )
+        if not collision:
+            return wires, label, junctions
+
+    raise RuntimeError(
+        f"cannot route net '{name}' without touching existing foreign-net geometry; "
+        "reposition a component or increase placement clearance"
+    )
+
+
 def route_net_incremental(circuit: Circuit, schematic: Schematic, net_name: str) -> dict:
     """Reroute one Circuit IR net while preserving every unrelated net geometry."""
     net = circuit.nets.get(net_name)
@@ -107,12 +256,8 @@ def route_net_incremental(circuit: Circuit, schematic: Schematic, net_name: str)
             f"cannot locate pin geometry for net '{net_name}': {', '.join(sorted(missing))}"
         )
 
-    wires, label, junctions = _route_net(net_name, endpoints)
-    for wire in wires:
-        wire.net = net_name
-    label.net = net_name
-    for junction in junctions:
-        junction.net = net_name
+    foreign_wires = [wire for wire in schematic.wires if wire.net and wire.net != net_name]
+    wires, label, junctions = _route_incremental_geometry(net_name, endpoints, foreign_wires)
 
     schematic.wires = [wire for wire in schematic.wires if wire.net != net_name]
     schematic.labels = [item for item in schematic.labels if item.net != net_name]
@@ -139,6 +284,18 @@ def _owned_geometry_nets(schematic: Schematic) -> set[str]:
     return nets
 
 
+def _foreign_net_intersections(schematic: Schematic) -> list[tuple[str, str]]:
+    intersections: set[tuple[str, str]] = set()
+    owned = [wire for wire in schematic.wires if wire.net]
+    for index, left in enumerate(owned):
+        for right in owned[index + 1 :]:
+            if left.net == right.net:
+                continue
+            if _segments_intersect(left, right):
+                intersections.add(tuple(sorted((left.net, right.net))))
+    return sorted(intersections)
+
+
 def _incremental_semantic_violations(circuit: Circuit, schematic: Schematic) -> list[dict]:
     violations = [
         {"severity": "error", "type": "INVALID_REFERENCE", "description": message}
@@ -154,6 +311,14 @@ def _incremental_semantic_violations(circuit: Circuit, schematic: Schematic) -> 
                     "description": f"net '{name}' has semantic connections but no incremental geometry",
                 }
             )
+    for left, right in _foreign_net_intersections(schematic):
+        violations.append(
+            {
+                "severity": "error",
+                "type": "FOREIGN_NET_GEOMETRY_INTERSECTION",
+                "description": f"incremental geometry for nets '{left}' and '{right}' touches or overlaps",
+            }
+        )
     return violations
 
 
