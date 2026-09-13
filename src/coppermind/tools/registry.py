@@ -13,6 +13,13 @@ from dataclasses import dataclass
 from typing import cast
 
 from coppermind.session import Session
+from coppermind.tools.circuit import (
+    component_freeze_placement,
+    component_place_relative,
+    connect_incremental,
+    schematic_checkpoint,
+    schematic_export_current,
+)
 from coppermind.tools.composer import COMPOSER_ROUTED_TOOLS
 from coppermind.tools.core import component_place, net_create, net_route
 from coppermind.tools.routed import ROUTED_TOOLS
@@ -25,6 +32,11 @@ _CATEGORY_BY_PREFIX = {
     "net_": "net",
     "board_": "board",
     "design_": "design",
+    "list_": "discovery",
+    "get_": "discovery",
+    "search_": "discovery",
+    "execute_": "discovery",
+    "connect_": "schematic",
     "schematic_": "schematic",
     "supplier_": "supplier",
     "route_": "routing",
@@ -34,6 +46,13 @@ _CATEGORY_BY_PREFIX = {
 
 _AGENT_HIDDEN = {"symbol_add", "wire_add"}
 _LEGACY_ROUTED = (component_place, net_create, net_route)
+_INCREMENTAL_ROUTED = (
+    component_place_relative,
+    component_freeze_placement,
+    connect_incremental,
+    schematic_checkpoint,
+    schematic_export_current,
+)
 
 
 def _category_for(name: str) -> str:
@@ -121,6 +140,6 @@ class ToolRegistry:
 _ROUTED_AGENT_TOOLS = tuple(fn for fn in ROUTED_TOOLS if fn.__name__ not in _AGENT_HIDDEN)
 _ALL_ROUTED_TOOLS = cast(
     tuple[ToolCallable, ...],
-    _ROUTED_AGENT_TOOLS + COMPOSER_ROUTED_TOOLS + _LEGACY_ROUTED,
+    _ROUTED_AGENT_TOOLS + COMPOSER_ROUTED_TOOLS + _LEGACY_ROUTED + _INCREMENTAL_ROUTED,
 )
 REGISTRY = ToolRegistry(_ALL_ROUTED_TOOLS)

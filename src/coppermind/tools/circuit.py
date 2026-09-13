@@ -2,13 +2,20 @@
 
 These are the preferred authoring surface for an LLM. The model names real
 components, pins and nets; geometric placement/wiring is an implementation
-detail owned by the composer rather than prompt context.
+detail owned by the composer or the incremental schematic engine rather than
+prompt context.
 """
 
 from __future__ import annotations
 
 from coppermind.circuit import Component, Net, Pin, PinRef
 from coppermind.libraries.catalog import find_symbols
+from coppermind.schematic.incremental import (
+    export_incremental_schematic,
+    place_relative_geometry,
+    route_net_incremental,
+    validate_incremental_schematic,
+)
 from coppermind.schematic.models import (
     SchLibraryDefinition,
     SchLibrarySymbol,
@@ -37,7 +44,7 @@ def _cache_library_symbol(session: Session, lib_id: str) -> SchLibrarySymbol:
 
 
 def _automatic_symbol_position(index: int) -> tuple[float, float]:
-    """Deterministic temporary layout until the semantic composer lands."""
+    """Deterministic temporary position until the agent places the component."""
     columns = 4
     x = 25.4 + (index % columns) * 38.1
     y = 25.4 + (index // columns) * 30.48
@@ -181,6 +188,146 @@ def connect_pins(session: Session, net: str, pins: list[str]) -> dict:
     }
 
 
+def _incremental_geometry_nets(session: Session) -> set[str]:
+    sch = session.require_schematic()
+    nets = {wire.net for wire in sch.wires if wire.net}
+    nets.update(label.net for label in sch.labels if label.net)
+    nets.update(junction.net for junction in sch.junctions if junction.net)
+    return nets
+
+
+def component_place_relative(
+    session: Session,
+    reference: str,
+    anchor: str,
+    direction: str = "right",
+    gap_mm: float = 25.4,
+    lock: bool = True,
+    force: bool = False,
+) -> dict:
+    """Place one component relative to another and reroute only impacted incremental nets."""
+    circuit = session.require_circuit()
+    if reference not in circuit.components:
+        raise KeyError(f"component '{reference}' does not exist")
+    if anchor not in circuit.components:
+        raise KeyError(f"anchor component '{anchor}' does not exist")
+    component = circuit.components[reference]
+    if component.properties.get("placement_locked") == "true" and not force:
+        raise ValueError(
+            f"component '{reference}' placement is locked; pass force=true to reposition it"
+        )
+
+    schematic_before = session.require_schematic().model_copy(deep=True)
+    existing_geometry_nets = _incremental_geometry_nets(session)
+    impacted = sorted(
+        name
+        for name, net in circuit.nets.items()
+        if name in existing_geometry_nets
+        and any(node.component == reference for node in net.nodes)
+    )
+    try:
+        placement = place_relative_geometry(
+            session.require_schematic(),
+            reference,
+            anchor,
+            direction=direction,
+            gap_mm=gap_mm,
+        )
+        rerouted = [
+            route_net_incremental(circuit, session.require_schematic(), net_name)
+            for net_name in impacted
+        ]
+    except Exception:
+        session.schematic = schematic_before
+        raise
+
+    if lock:
+        component.properties["placement_locked"] = "true"
+    elif force:
+        component.properties.pop("placement_locked", None)
+    return {
+        "ok": True,
+        **placement,
+        "locked": component.properties.get("placement_locked") == "true",
+        "rerouted_nets": [item["net"] for item in rerouted],
+        "pending_commit": True,
+    }
+
+
+def component_freeze_placement(session: Session, references: list[str] | None = None) -> dict:
+    """Mark current component placements as stable for the incremental authoring loop."""
+    circuit = session.require_circuit()
+    selected = references or sorted(circuit.components)
+    missing = [ref for ref in selected if ref not in circuit.components]
+    if missing:
+        raise KeyError(f"unknown components: {', '.join(sorted(missing))}")
+    for ref in selected:
+        circuit.components[ref].properties["placement_locked"] = "true"
+    return {"ok": True, "references": selected, "pending_commit": True}
+
+
+def connect_incremental(session: Session, net: str, pins: list[str]) -> dict:
+    """Connect pins in Circuit IR and reroute only that changed net atomically."""
+    circuit = session.require_circuit()
+    if net not in circuit.nets:
+        raise KeyError(f"net '{net}' does not exist; call create_net first")
+    net_before = circuit.nets[net].model_copy(deep=True)
+    schematic_before = session.require_schematic().model_copy(deep=True)
+    try:
+        connected = connect_pins(session, net, pins)
+        route = route_net_incremental(circuit, session.require_schematic(), net)
+    except Exception:
+        circuit.nets[net] = net_before
+        session.schematic = schematic_before
+        raise
+    return {
+        **connected,
+        "incremental": True,
+        "route": route,
+    }
+
+
+def schematic_checkpoint(
+    session: Session,
+    run_external: bool = True,
+    allow_incomplete: bool = False,
+) -> dict:
+    """Validate and snapshot incremental geometry; optionally tolerate incomplete ERC."""
+    validation = validate_incremental_schematic(
+        session.require_circuit(),
+        session.require_schematic(),
+        resolver=session.symbol_resolver,
+        run_external=run_external,
+        allow_incomplete=allow_incomplete,
+    )
+    committed = not bool(validation["blocking"])
+    if committed:
+        session.commit_semantic_state()
+    return {
+        "committed": committed,
+        "semantic_committed": committed,
+        "validation": validation,
+        "semantic_dirty": session.semantic_dirty(),
+    }
+
+
+def schematic_export_current(
+    session: Session,
+    path: str,
+    allow_invalid: bool = False,
+    run_external: bool = True,
+) -> dict:
+    """Export current incremental geometry without running whole-sheet composition."""
+    return export_incremental_schematic(
+        session.require_circuit(),
+        session.require_schematic(),
+        path,
+        resolver=session.symbol_resolver,
+        allow_invalid=allow_invalid,
+        run_external=run_external,
+    )
+
+
 def inspect_component(session: Session, reference: str) -> dict:
     """Inspect a Circuit IR component, its real pins and current net membership."""
     circuit = session.require_circuit()
@@ -201,6 +348,7 @@ def inspect_component(session: Session, reference: str) -> dict:
         "symbol": component.symbol_id,
         "value": component.value,
         "footprint": component.footprint,
+        "placement_locked": component.properties.get("placement_locked") == "true",
         "pins": [
             {
                 "number": pin.number,
