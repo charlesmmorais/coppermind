@@ -21,9 +21,10 @@ from coppermind.schematic.models import (
     NetLabel,
     Wire,
 )
-from coppermind.schematic.symbol_geometry import symbol_graphic_box
+from coppermind.schematic.symbol_geometry import symbol_graphic_box, wire_hits_body
 from coppermind.serialize.kicad_sch import (
     _boxes_overlap,
+    _field_boxes,
     _label_layouts,
     _text_box,
     label_clearance_violations,
@@ -62,6 +63,11 @@ def test_sense_escapes_real_pins_without_crossing_r7_r8_or_moving_symbols(tmp_pa
     assert validate_incremental_schematic(circuit, sch, run_external=False)["blocking"]
     route_net_incremental(circuit, sch, "SENSE")
     assert _body_contacts(sch) == []
+    assert not any(
+        wire_hits_body(w, box, clearance=0)
+        for w in sch.wires
+        for box in _field_boxes(sch, sch.library_symbols)
+    )
     assert original_symbols == sch.symbols
     assert original_wires == [w for w in sch.wires if w.net == "VIN"]
     assert _pin_anchor(sch, "R7", "2") == pytest.approx((45.72, 67.31))
@@ -169,3 +175,35 @@ def test_label_on_safe_crossing_cannot_follow_the_other_net():
     assert _label_network(sch, label) == {0}
     placed = _label_layouts(sch, {})[label.uuid]
     assert _point_on_wire((placed.x, placed.y), sch.wires[0])
+
+
+def test_nearby_body_detour_preserves_horizontal_flow(tmp_path):
+    from coppermind.tools.flow_orientation import component_orient_flow
+
+    (tmp_path / "Device.kicad_sym").write_text(DEVICE_LIB)
+    raw = (
+        _connector()
+        .definitions[0]
+        .raw_s_expression.replace('"Connector_Generic:Conn_01x01"', '"Conn_01x01"')
+    )
+    (tmp_path / "Connector_Generic.kicad_sym").write_text(
+        "(kicad_symbol_lib (version 20231120) (generator test) " + raw + ")"
+    )
+    session = Session(backend=MemoryBackend(), symbol_resolver=SymbolResolver([tmp_path]))
+    project_create(session, "horizontal_body", 160, 90)
+    component_add(session, "J1", "Connector_Generic:Conn_01x01", value="INPUT")
+    for ref in ("R1", "R2"):
+        component_add(session, ref, "Device:R", value="10k")
+    sch = session.require_schematic()
+    for symbol, x, angle in zip(sch.symbols, [25.4, 55.88, 81.28], [0, 0, 90]):
+        symbol.x, symbol.y, symbol.rotation = x, 25.4, angle
+    external = [s.model_dump() for s in sch.symbols if s.reference != "R1"]
+    for net, pins in {"VIN": ["J1.1", "R1.1"], "N12": ["R1.2", "R2.1"]}.items():
+        create_net(session, net)
+        connect_pins(session, net, pins)
+    result = component_orient_flow(session, "R1")
+    assert result["rotation"] == 90, result
+    assert result["route_length_mm"] < 60  # no coarse 10.16mm outer-lane excursion
+    sch = session.require_schematic()
+    assert external == [s.model_dump() for s in sch.symbols if s.reference != "R1"]
+    assert _body_contacts(sch) == []
