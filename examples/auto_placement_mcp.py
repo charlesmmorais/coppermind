@@ -4,9 +4,10 @@ Run from the repository root while the Streamable HTTP MCP server is running:
 
     python examples/auto_placement_mcp.py
 
-The example intentionally connects components before asking the placement engine
-to choose a relative direction. That gives the scorer real net geometry to
-optimize while preserving unrelated accepted geometry.
+The example follows the intended incremental agent loop: electrical intent is
+first declared with semantic ``connect_pins`` calls, then ``component_place_auto``
+chooses a relative position and materializes only the affected net geometry.
+This avoids routing a component while it is still at its temporary add position.
 """
 
 from __future__ import annotations
@@ -68,9 +69,11 @@ async def main() -> None:
                     {"reference": reference, "symbol": "Device:R", "value": value},
                 )
 
-            await routed(
+            # Declare N2 semantically first. Auto placement now owns both the
+            # placement choice and first materialization of N2 geometry.
+            await call(
                 session,
-                "connect_incremental",
+                "connect_pins",
                 {"net": "N2", "pins": ["R1.2", "R2.1"]},
             )
             r2 = await routed(
@@ -79,14 +82,17 @@ async def main() -> None:
                 {"reference": "R2", "anchor": "R1", "gap_mm": 25.4},
             )
 
-            await routed(
+            # R3 participates in two nets. Neither is routed at R3's temporary
+            # add position; the auto placer evaluates positions while routing
+            # both semantic nets on isolated snapshots.
+            await call(
                 session,
-                "connect_incremental",
+                "connect_pins",
                 {"net": "N3", "pins": ["R2.2", "R3.1"]},
             )
-            await routed(
+            await call(
                 session,
-                "connect_incremental",
+                "connect_pins",
                 {"net": "N1", "pins": ["R1.1", "R3.2"]},
             )
             r3 = await routed(
