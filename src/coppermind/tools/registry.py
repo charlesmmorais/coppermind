@@ -23,6 +23,7 @@ from coppermind.tools.circuit import (
 )
 from coppermind.tools.composer import COMPOSER_ROUTED_TOOLS
 from coppermind.tools.core import component_place, net_create, net_route
+from coppermind.tools.neighborhood_reflow import component_reflow_neighborhood
 from coppermind.tools.routed import ROUTED_TOOLS
 
 ToolCallable = Callable[..., dict]
@@ -50,6 +51,7 @@ _LEGACY_ROUTED = (component_place, net_create, net_route)
 _INCREMENTAL_ROUTED = (
     component_place_relative,
     component_place_auto,
+    component_reflow_neighborhood,
     component_freeze_placement,
     connect_incremental,
     schematic_checkpoint,
