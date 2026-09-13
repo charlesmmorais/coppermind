@@ -166,11 +166,32 @@ def _candidate_trunk_xs(points: list[tuple[float, float]]) -> list[float]:
     return unique
 
 
+def _candidate_trunk_ys(points: list[tuple[float, float]]) -> list[float]:
+    ys = [y for _, y in points]
+    min_y, max_y = min(ys), max(ys)
+    midpoint = _snap((min_y + max_y) / 2.0)
+    candidates = [midpoint]
+    stride = 4 * _GRID
+    for step in range(1, 9):
+        candidates.extend((midpoint + step * stride, midpoint - step * stride))
+    candidates.extend((min_y - stride, max_y + stride))
+
+    unique: list[float] = []
+    seen: set[float] = set()
+    for value in candidates:
+        snapped = _coord(_snap(value))
+        if snapped not in seen:
+            unique.append(snapped)
+            seen.add(snapped)
+    return unique
+
+
 def _build_trunk_route(
     name: str,
     points: list[tuple[float, float]],
     trunk_x: float,
 ) -> tuple[list[Wire], NetLabel, list[Junction]]:
+    """Build a vertical trunk with horizontal endpoint branches."""
     wires: list[Wire] = []
     seen: set[tuple[tuple[float, float], tuple[float, float]]] = set()
     for x, y in points:
@@ -203,6 +224,47 @@ def _build_trunk_route(
     else:
         label_x = trunk_x
         label_y = ys[len(ys) // 2]
+    return wires, NetLabel(text=name, x=label_x, y=label_y, net=name), junctions
+
+
+def _build_horizontal_trunk_route(
+    name: str,
+    points: list[tuple[float, float]],
+    trunk_y: float,
+) -> tuple[list[Wire], NetLabel, list[Junction]]:
+    """Build a horizontal trunk with vertical endpoint branches."""
+    wires: list[Wire] = []
+    seen: set[tuple[tuple[float, float], tuple[float, float]]] = set()
+    for x, y in points:
+        _append_wire(wires, seen, (x, y), (x, trunk_y), name)
+
+    xs = sorted({x for x, _ in points})
+    for x0, x1 in zip(xs, xs[1:]):
+        _append_wire(wires, seen, (x0, trunk_y), (x1, trunk_y), name)
+
+    junctions: list[Junction] = []
+    if len(points) > 2:
+        min_x, max_x = xs[0], xs[-1]
+        for x in xs:
+            branches = sum(
+                1 for px, y in points if px == x and not math.isclose(y, trunk_y, abs_tol=_EPS)
+            )
+            on_trunk = sum(
+                1 for px, y in points if px == x and math.isclose(y, trunk_y, abs_tol=_EPS)
+            )
+            horizontal_sides = int(x > min_x) + int(x < max_x)
+            if branches + on_trunk + horizontal_sides >= 3:
+                junctions.append(Junction(x=x, y=trunk_y, net=name))
+
+    if len(points) == 2 and math.isclose(points[0][1], points[1][1], abs_tol=_EPS):
+        label_x = _coord((points[0][0] + points[1][0]) / 2.0)
+        label_y = points[0][1]
+    elif len(points) == 2 and math.isclose(points[0][0], points[1][0], abs_tol=_EPS):
+        label_x = points[0][0]
+        label_y = _coord((points[0][1] + points[1][1]) / 2.0)
+    else:
+        label_x = xs[len(xs) // 2]
+        label_y = trunk_y
     return wires, NetLabel(text=name, x=label_x, y=label_y, net=name), junctions
 
 
@@ -257,9 +319,9 @@ def _route_score(
     """Score collision-free geometry for compact, stable incremental routing.
 
     Expansion outside the already occupied design envelope is deliberately more
-    expensive than a small increase in wire length.  This prevents the router
+    expensive than a small increase in wire length. This prevents the router
     from choosing the first legal escape lane when a similarly short route can
-    stay inside the existing drawing.  Segment count is a deterministic proxy
+    stay inside the existing drawing. Segment count is a deterministic proxy
     for bends/visual complexity.
     """
     length = _route_length(wires)
@@ -367,10 +429,9 @@ def _route_incremental_geometry(
 ) -> tuple[list[Wire], NetLabel, list[Junction]]:
     """Route one net without touching foreign wires or foreign pin anchors.
 
-    All legal compact-trunk and two-point dogleg candidates are scored before a
-    winner is selected. This preserves the no-reflow incremental contract while
-    preventing a wire from silently crossing another pin on the way to its own
-    endpoint.
+    Vertical and horizontal trunk families are both evaluated for multi-point
+    nets. Two-point nets also receive outer Manhattan dogleg candidates. The
+    winning geometry is the lowest-cost collision-free route.
     """
     points = sorted(set((_coord(x), _coord(y)) for x, y in endpoints))
     if not points:
@@ -382,6 +443,11 @@ def _route_incremental_geometry(
     candidates: list[tuple[list[Wire], NetLabel, list[Junction]]] = []
     for trunk_x in _candidate_trunk_xs(points):
         candidate = _build_trunk_route(name, points, trunk_x)
+        if not _route_collides(candidate[0], foreign_wires, foreign_points):
+            candidates.append(candidate)
+
+    for trunk_y in _candidate_trunk_ys(points):
+        candidate = _build_horizontal_trunk_route(name, points, trunk_y)
         if not _route_collides(candidate[0], foreign_wires, foreign_points):
             candidates.append(candidate)
 
