@@ -197,12 +197,104 @@ def _build_trunk_route(
     return wires, NetLabel(text=name, x=label_x, y=label_y, net=name), junctions
 
 
+def _route_collides(wires: list[Wire], foreign_wires: list[Wire]) -> bool:
+    return any(
+        _segments_intersect(candidate, foreign)
+        for candidate in wires
+        for foreign in foreign_wires
+    )
+
+
+def _candidate_detours(a: float, b: float) -> list[float]:
+    """Return deterministic clearance lanes outside a segment's bounding range."""
+    low, high = min(a, b), max(a, b)
+    stride = 4 * _GRID
+    candidates: list[float] = []
+    for step in range(1, 9):
+        candidates.extend((low - step * stride, high + step * stride))
+    return [_coord(_snap(value)) for value in candidates]
+
+
+def _build_two_point_dogleg(
+    name: str,
+    a: tuple[float, float],
+    b: tuple[float, float],
+    *,
+    detour_x: float | None = None,
+    detour_y: float | None = None,
+) -> tuple[list[Wire], NetLabel, list[Junction]]:
+    """Build a three-segment Manhattan dogleg through one clearance lane."""
+    if (detour_x is None) == (detour_y is None):
+        raise ValueError("exactly one dogleg axis must be provided")
+
+    wires: list[Wire] = []
+    seen: set[tuple[tuple[float, float], tuple[float, float]]] = set()
+    ax, ay = a
+    bx, by = b
+    if detour_y is not None:
+        lane_y = _coord(detour_y)
+        _append_wire(wires, seen, a, (ax, lane_y), name)
+        _append_wire(wires, seen, (ax, lane_y), (bx, lane_y), name)
+        _append_wire(wires, seen, (bx, lane_y), b, name)
+        label = NetLabel(
+            text=name,
+            x=_coord((ax + bx) / 2.0),
+            y=lane_y,
+            net=name,
+        )
+    else:
+        assert detour_x is not None
+        lane_x = _coord(detour_x)
+        _append_wire(wires, seen, a, (lane_x, ay), name)
+        _append_wire(wires, seen, (lane_x, ay), (lane_x, by), name)
+        _append_wire(wires, seen, (lane_x, by), b, name)
+        label = NetLabel(
+            text=name,
+            x=lane_x,
+            y=_coord((ay + by) / 2.0),
+            net=name,
+        )
+    return wires, label, []
+
+
+def _route_two_point_dogleg(
+    name: str,
+    points: list[tuple[float, float]],
+    foreign_wires: list[Wire],
+) -> tuple[list[Wire], NetLabel, list[Junction]] | None:
+    """Find a collision-free outer lane when the direct/trunk route is blocked."""
+    if len(points) != 2:
+        return None
+    a, b = points
+
+    # Prefer a Y detour for horizontally separated endpoints and an X detour
+    # for vertically separated endpoints, then try the alternate axis.
+    axes = ("y", "x") if abs(a[0] - b[0]) >= abs(a[1] - b[1]) else ("x", "y")
+    for axis in axes:
+        values = (
+            _candidate_detours(a[1], b[1])
+            if axis == "y"
+            else _candidate_detours(a[0], b[0])
+        )
+        for value in values:
+            candidate = _build_two_point_dogleg(
+                name,
+                a,
+                b,
+                detour_y=value if axis == "y" else None,
+                detour_x=value if axis == "x" else None,
+            )
+            if not _route_collides(candidate[0], foreign_wires):
+                return candidate
+    return None
+
+
 def _route_incremental_geometry(
     name: str,
     endpoints: list[tuple[float, float]],
     foreign_wires: list[Wire],
 ) -> tuple[list[Wire], NetLabel, list[Junction]]:
-    """Route one net with a midpoint trunk that cannot touch foreign-net wires."""
+    """Route one net without touching geometry owned by another net."""
     points = sorted(set((_coord(x), _coord(y)) for x, y in endpoints))
     if not points:
         raise ValueError(f"net '{name}' has no drawable endpoints")
@@ -210,15 +302,17 @@ def _route_incremental_geometry(
         x, y = points[0]
         return [], NetLabel(text=name, x=x, y=y, net=name), []
 
+    # First preserve the compact midpoint-trunk behavior used by the baseline
+    # divider. If every trunk lane is blocked, a two-pin net may escape through
+    # an outer Manhattan dogleg without moving any already accepted symbol/net.
     for trunk_x in _candidate_trunk_xs(points):
         wires, label, junctions = _build_trunk_route(name, points, trunk_x)
-        collision = any(
-            _segments_intersect(candidate, foreign)
-            for candidate in wires
-            for foreign in foreign_wires
-        )
-        if not collision:
+        if not _route_collides(wires, foreign_wires):
             return wires, label, junctions
+
+    dogleg = _route_two_point_dogleg(name, points, foreign_wires)
+    if dogleg is not None:
+        return dogleg
 
     raise RuntimeError(
         f"cannot route net '{name}' without touching existing foreign-net geometry; "
