@@ -26,6 +26,22 @@ _segments_intersect = _core._segments_intersect
 _point_on_wire = _core._point_on_wire
 _route_score = _core._route_score
 _route_length = _core._route_length
+_wire_key = _core._wire_key
+_append_wire = _core._append_wire
+_between = _core._between
+_candidate_trunk_xs = _core._candidate_trunk_xs
+_candidate_trunk_ys = _core._candidate_trunk_ys
+_build_trunk_route = _core._build_trunk_route
+_build_horizontal_trunk_route = _core._build_horizontal_trunk_route
+_route_bounds = _core._route_bounds
+_reference_bounds = _core._reference_bounds
+_candidate_detours = _core._candidate_detours
+_build_two_point_dogleg = _core._build_two_point_dogleg
+_two_point_dogleg_candidates = _core._two_point_dogleg_candidates
+_owned_geometry_nets = _core._owned_geometry_nets
+_foreign_pin_contacts = _core._foreign_pin_contacts
+_is_expected_incomplete_erc = _core._is_expected_incomplete_erc
+_progressive_erc_view = _core._progressive_erc_view
 
 
 def _same_point(left: tuple[float, float], right: tuple[float, float]) -> bool:
