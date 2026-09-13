@@ -7,6 +7,7 @@ import pytest
 from coppermind.backends.memory_backend import MemoryBackend
 from coppermind.libraries import SymbolResolver
 from coppermind.schematic import incremental
+from coppermind.schematic.models import Schematic, Wire
 from coppermind.session import Session
 from coppermind.tools.circuit import (
     component_add,
@@ -141,6 +142,56 @@ def test_connect_incremental_reroutes_only_changed_net(tmp_path: Path):
     assert [wire.model_dump() for wire in sch.wires if wire.net == "A"] == a_before
     assert any(wire.net == "B" for wire in sch.wires)
     assert {label.net for label in sch.labels} == {"A", "B"}
+
+
+def test_incremental_router_avoids_divider_foreign_net_overlap():
+    """Regression for the first pseudo-live divider generated through MCP."""
+    vin_wires, _, _ = incremental._route_incremental_geometry(
+        "VIN",
+        [(20.32, 25.4), (63.5, 21.59)],
+        [],
+    )
+    vout_wires, _, _ = incremental._route_incremental_geometry(
+        "VOUT",
+        [(63.5, 29.21), (63.5, 46.99), (96.52, 25.4)],
+        vin_wires,
+    )
+    gnd_wires, _, _ = incremental._route_incremental_geometry(
+        "GND",
+        [(20.32, 27.94), (63.5, 54.61)],
+        vin_wires + vout_wires,
+    )
+
+    groups = [vin_wires, vout_wires, gnd_wires]
+    for index, left_group in enumerate(groups):
+        for right_group in groups[index + 1 :]:
+            assert not any(
+                incremental._segments_intersect(left, right)
+                for left in left_group
+                for right in right_group
+            )
+
+    # The previous router selected x=63.5 as the VIN/VOUT trunk and ran both
+    # nets through the resistor body/centre. The midpoint router must not.
+    assert not any(
+        wire.x1 == wire.x2 == 63.5 and min(wire.y1, wire.y2) <= 25.4 <= max(wire.y1, wire.y2)
+        for wire in vin_wires
+    )
+
+
+def test_semantic_validation_blocks_foreign_net_wire_intersection():
+    schematic = Schematic(name="collision")
+    schematic.wires = [
+        Wire(x1=10.0, y1=10.0, x2=30.0, y2=10.0, net="VIN"),
+        Wire(x1=20.0, y1=5.0, x2=20.0, y2=15.0, net="VOUT"),
+    ]
+
+    violations = incremental._incremental_semantic_violations(
+        circuit=incremental.Circuit(name="collision"),
+        schematic=schematic,
+    )
+
+    assert any(item["type"] == "FOREIGN_NET_GEOMETRY_INTERSECTION" for item in violations)
 
 
 def test_checkpoint_blocks_semantic_net_that_was_not_incrementally_routed(tmp_path: Path):
