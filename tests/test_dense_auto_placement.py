@@ -52,8 +52,19 @@ def _place(session: Session, reference: str, anchor: str) -> dict:
     result = component_place_auto(session, reference, anchor, gap_mm=25.4)
     assert result["ok"] is True
     assert result["chosen_direction"] in {"right", "below", "above", "left"}
+    assert result["chosen_gap_mm"] in {20.32, 25.4, 38.1}
     assert any(candidate.get("ok") for candidate in result["candidates"])
     return result
+
+
+def _all_geometry_points(session: Session) -> list[tuple[float, float]]:
+    schematic = session.require_schematic()
+    points = [(symbol.x, symbol.y) for symbol in schematic.symbols]
+    for wire in schematic.wires:
+        points.extend(((wire.x1, wire.y1), (wire.x2, wire.y2)))
+    points.extend((label.x, label.y) for label in schematic.labels)
+    points.extend((junction.x, junction.y) for junction in schematic.junctions)
+    return points
 
 
 def test_dense_semantic_first_auto_placement_routes_every_net(tmp_path: Path):
@@ -121,3 +132,13 @@ def test_dense_semantic_first_auto_placement_routes_every_net(tmp_path: Path):
         if symbol.reference.startswith("R")
     }
     assert len(positions) == 9
+
+    # A4 is serialized landscape (297 x 210 mm). Keep all incremental geometry
+    # inside the same 12.7 mm safe margin enforced by the auto placer.
+    points = _all_geometry_points(session)
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    assert min(xs) >= 12.7 - 1e-6
+    assert min(ys) >= 12.7 - 1e-6
+    assert max(xs) <= 297.0 - 12.7 + 1e-6
+    assert max(ys) <= 210.0 - 12.7 + 1e-6
