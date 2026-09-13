@@ -14,6 +14,8 @@ The incremental workflow is intended for an LLM/agent loop:
 - Relative placement locks the target by default. A later intentional move requires `force=true`; if the component already participates in incrementally routed nets, only those impacted nets are rerouted.
 - A changed net is rerouted independently; unrelated incremental net geometry is preserved.
 - Geometry derived incrementally carries internal net ownership so one net can be replaced atomically without rebuilding the whole sheet.
+- Incremental routing uses a midpoint Manhattan trunk rather than selecting an existing component X coordinate as the trunk. Candidate trunks are rejected when they touch or overlap geometry owned by another net.
+- `schematic_checkpoint` also blocks any foreign-net wire intersection detected from the owned incremental geometry, even when KiCad ERC would otherwise accept multiple labels on one connected conductor.
 - `schematic_checkpoint` validates the current incremental geometry without invoking the global composer.
 - `schematic_checkpoint(allow_incomplete=true)` is a progressive build checkpoint: expected temporary ERC findings such as dangling pins or a not-yet-driven power input remain visible and are marked `progressive_ignored`, while real conflicts such as incompatible output drivers remain blocking.
 - Final checkpoints and `schematic_export_current` are strict. Progressive ERC suppression is never used by the production export gate.
