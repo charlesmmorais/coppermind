@@ -182,8 +182,6 @@ def test_incremental_route_does_not_pass_through_foreign_component_pin(tmp_path:
     assert vout_wires
     assert not any(_point_on_wire(r4_pin2, wire) for wire in vout_wires)
 
-    # This was previously impossible when VOUT's shortest trunk ran through
-    # R4.2. The new foreign-pin keepout leaves that anchor available to FB.
     _add(session, "R5", "10k")
     _place(session, "R5", "R4", "below")
     fb_result = _connect(session, "FB", "R4.2", "R5.1")
@@ -230,15 +228,25 @@ def test_route_score_penalizes_unnecessary_envelope_expansion():
     )
 
 
-def test_incremental_router_scores_all_legal_doglegs_before_choosing():
+def test_incremental_router_prefers_short_safe_crossing_over_outer_dogleg():
     points = [(0.0, 0.0), (50.8, 20.32)]
+    blocker = Wire(x1=25.4, y1=-5.08, x2=25.4, y2=25.4, net="BLOCKER")
     foreign = [
-        Wire(x1=25.4, y1=-5.08, x2=25.4, y2=25.4, net="BLOCKER"),
+        blocker,
         Wire(x1=-50.8, y1=101.6, x2=101.6, y2=101.6, net="ENVELOPE"),
     ]
 
-    wires, label, _junctions = _route_incremental_geometry("VIN", points, foreign)
+    wires, _label, junctions = _route_incremental_geometry("VIN", points, foreign)
 
-    assert label.y > max(y for _, y in points)
+    route_length = sum(abs(wire.x2 - wire.x1) + abs(wire.y2 - wire.y1) for wire in wires)
+    manhattan_minimum = abs(points[1][0] - points[0][0]) + abs(points[1][1] - points[0][1])
+    assert route_length == manhattan_minimum
     assert all(wire.net == "VIN" for wire in wires)
-    assert sum(abs(wire.x2 - wire.x1) + abs(wire.y2 - wire.y1) for wire in wires) < 100
+    assert junctions == []
+    assert any(
+        not (wire.x1 == blocker.x1 == wire.x2 and wire.y1 == blocker.y1 == wire.y2)
+        and min(wire.x1, wire.x2) <= blocker.x1 <= max(wire.x1, wire.x2)
+        and min(blocker.y1, blocker.y2) <= wire.y1 <= max(blocker.y1, blocker.y2)
+        for wire in wires
+        if wire.y1 == wire.y2
+    )

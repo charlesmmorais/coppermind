@@ -166,23 +166,38 @@ def test_incremental_router_avoids_divider_foreign_net_overlap():
     for index, left_group in enumerate(groups):
         for right_group in groups[index + 1 :]:
             assert not any(
-                incremental._segments_intersect(left, right)
+                incremental._foreign_wire_contact_is_blocking(left, right)
                 for left in left_group
                 for right in right_group
             )
 
     # The previous router selected x=63.5 as the VIN/VOUT trunk and ran both
-    # nets through the resistor body/centre. The midpoint router must not.
+    # nets through the resistor body/centre. The pin keepout must still prevent it.
     assert not any(
         wire.x1 == wire.x2 == 63.5 and min(wire.y1, wire.y2) <= 25.4 <= max(wire.y1, wire.y2)
         for wire in vin_wires
     )
 
 
-def test_semantic_validation_blocks_foreign_net_wire_intersection():
-    schematic = Schematic(name="collision")
+def test_semantic_validation_allows_clean_foreign_net_wire_crossing():
+    schematic = Schematic(name="crossing")
     schematic.wires = [
         Wire(x1=10.0, y1=10.0, x2=30.0, y2=10.0, net="VIN"),
+        Wire(x1=20.0, y1=5.0, x2=20.0, y2=15.0, net="VOUT"),
+    ]
+
+    violations = incremental._incremental_semantic_violations(
+        circuit=incremental.Circuit(name="crossing"),
+        schematic=schematic,
+    )
+
+    assert not any(item["type"] == "FOREIGN_NET_GEOMETRY_INTERSECTION" for item in violations)
+
+
+def test_semantic_validation_blocks_foreign_net_endpoint_contact():
+    schematic = Schematic(name="collision")
+    schematic.wires = [
+        Wire(x1=10.0, y1=10.0, x2=20.0, y2=10.0, net="VIN"),
         Wire(x1=20.0, y1=5.0, x2=20.0, y2=15.0, net="VOUT"),
     ]
 
@@ -224,7 +239,7 @@ def test_progressive_checkpoint_ignores_expected_incomplete_erc(tmp_path: Path, 
             ],
         }
 
-    monkeypatch.setattr(incremental, "run_kicad_erc", fake_erc)
+    monkeypatch.setattr(incremental._core, "run_kicad_erc", fake_erc)
     result = schematic_checkpoint(session, allow_incomplete=True)
 
     assert result["committed"] is True
@@ -250,7 +265,7 @@ def test_progressive_checkpoint_keeps_real_erc_error_blocking(tmp_path: Path, mo
             ],
         }
 
-    monkeypatch.setattr(incremental, "run_kicad_erc", fake_erc)
+    monkeypatch.setattr(incremental._core, "run_kicad_erc", fake_erc)
     result = schematic_checkpoint(session, allow_incomplete=True)
 
     assert result["committed"] is False
