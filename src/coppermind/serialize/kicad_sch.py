@@ -11,7 +11,7 @@ import uuid as _uuid
 from dataclasses import dataclass
 
 from coppermind.libraries import SymbolResolver
-from coppermind.schematic.composer import symbol_pin_geometry
+from coppermind.schematic.composer import symbol_pin_geometry, symbol_sheet_offset
 from coppermind.schematic.models import (
     Schematic,
     SchLibraryDefinition,
@@ -180,14 +180,6 @@ def _field_layout(
     }
 
 
-def _rotate(x: float, y: float, degrees: float) -> tuple[float, float]:
-    angle = math.radians(degrees)
-    return (
-        x * math.cos(angle) - y * math.sin(angle),
-        x * math.sin(angle) + y * math.cos(angle),
-    )
-
-
 def _text_box(text: str, x: float, y: float, justify: str | None = None) -> Box:
     """Approximate a KiCad text box closely enough for deterministic clearance."""
     width = max(_TEXT_HEIGHT, len(text) * _TEXT_CHAR_WIDTH)
@@ -228,7 +220,7 @@ def _boxes_overlap(left: Box, right: Box) -> bool:
 def _symbol_body_box(sym, library: SchLibrarySymbol) -> Box:
     points: list[tuple[float, float]] = []
     for pin in symbol_pin_geometry(library, sym.unit).values():
-        dx, dy = _rotate(pin.x, -pin.y, sym.rotation)
+        dx, dy = symbol_sheet_offset(pin.x, pin.y, sym.rotation)
         points.append((sym.x + dx, sym.y + dy))
     if not points:
         points = [(sym.x - 2.54, sym.y - 2.54), (sym.x + 2.54, sym.y + 2.54)]
