@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from coppermind.session import Session
+from coppermind.tools.auto_placement import component_place_auto
 from coppermind.tools.circuit import (
     component_freeze_placement,
     component_place_relative,
@@ -48,6 +49,7 @@ _AGENT_HIDDEN = {"symbol_add", "wire_add"}
 _LEGACY_ROUTED = (component_place, net_create, net_route)
 _INCREMENTAL_ROUTED = (
     component_place_relative,
+    component_place_auto,
     component_freeze_placement,
     connect_incremental,
     schematic_checkpoint,
