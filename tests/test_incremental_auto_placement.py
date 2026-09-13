@@ -6,7 +6,7 @@ from coppermind.backends.memory_backend import MemoryBackend
 from coppermind.libraries import SymbolResolver
 from coppermind.session import Session
 from coppermind.tools.auto_placement import component_place_auto
-from coppermind.tools.circuit import component_add, connect_incremental, create_net
+from coppermind.tools.circuit import component_add, connect_incremental, connect_pins, create_net
 from coppermind.tools.core import project_create
 from coppermind.tools.registry import REGISTRY
 
@@ -69,6 +69,51 @@ def test_auto_placement_prefers_shorter_connected_direction(tmp_path: Path):
     r2 = next(symbol for symbol in session.require_schematic().symbols if symbol.reference == "R2")
     assert r2.x == r1.x
     assert r2.y > r1.y
+
+
+def test_auto_placement_routes_semantic_only_connection(tmp_path: Path):
+    session = _session(tmp_path)
+    project_create(session, "auto_place_semantic", 120, 100)
+    create_net(session, "SIG")
+    component_add(session, "R1", "Device:R", value="10k")
+    component_add(session, "R2", "Device:R", value="10k")
+
+    # Declare electrical intent without materializing geometry at the temporary
+    # component position. Auto placement must place and route it atomically.
+    connect_pins(session, "SIG", ["R1.2", "R2.1"])
+    assert _wire_dump(session, "SIG") == []
+
+    result = component_place_auto(session, "R2", "R1", gap_mm=25.4)
+
+    assert result["ok"] is True
+    assert result["rerouted_nets"] == ["SIG"]
+    assert _wire_dump(session, "SIG")
+
+
+def test_auto_placement_handles_multiple_unrouted_nets(tmp_path: Path):
+    """Regression for the MCP demo: N1 must not be routed at R3's temp position."""
+    session = _session(tmp_path)
+    project_create(session, "auto_place_multi", 160, 120)
+    for net in ("N1", "N2", "N3"):
+        create_net(session, net)
+    for reference in ("R1", "R2", "R3"):
+        component_add(session, reference, "Device:R", value="10k")
+
+    connect_pins(session, "N2", ["R1.2", "R2.1"])
+    r2 = component_place_auto(session, "R2", "R1", gap_mm=25.4)
+    assert r2["ok"] is True
+
+    connect_pins(session, "N3", ["R2.2", "R3.1"])
+    connect_pins(session, "N1", ["R1.1", "R3.2"])
+    assert _wire_dump(session, "N1") == []
+    assert _wire_dump(session, "N3") == []
+
+    r3 = component_place_auto(session, "R3", "R2", gap_mm=25.4)
+
+    assert r3["ok"] is True
+    assert r3["rerouted_nets"] == ["N1", "N3"]
+    assert _wire_dump(session, "N1")
+    assert _wire_dump(session, "N3")
 
 
 def test_auto_placement_preserves_unrelated_net_geometry(tmp_path: Path):
