@@ -3,7 +3,7 @@
 The global composer is intentionally not involved. A candidate move is tried on
 an isolated schematic snapshot, every complete semantic net attached to the
 moved component is routed on that snapshot, and the best legal relative
-direction is committed atomically.
+position is committed atomically.
 """
 
 from __future__ import annotations
@@ -18,7 +18,23 @@ from coppermind.session import Session
 _DIRECTION_ORDER = ("right", "below", "above", "left")
 _MIN_CENTER_CLEARANCE = 12.7
 _SOFT_CENTER_CLEARANCE = 25.4
+_GRID_MM = 2.54
+_PAGE_MARGIN_MM = 12.7
+_SOFT_EDGE_CLEARANCE_MM = 25.4
 _EPS = 1e-6
+
+# KiCad drawing-sheet dimensions in landscape orientation, in millimetres.
+# Unknown/custom paper names remain unconstrained rather than being guessed.
+_PAPER_SIZES_MM: dict[str, tuple[float, float]] = {
+    "A5": (210.0, 148.0),
+    "A4": (297.0, 210.0),
+    "A3": (420.0, 297.0),
+    "A2": (594.0, 420.0),
+    "A1": (841.0, 594.0),
+    "A0": (1189.0, 841.0),
+    "LETTER": (279.4, 215.9),
+    "LEGAL": (355.6, 215.9),
+}
 
 
 def _impacted_nets(session: Session, reference: str) -> list[str]:
@@ -59,6 +75,12 @@ def _stable_bounds(
     for wire in schematic.wires:
         if not wire.net or wire.net not in impacted_nets:
             points.extend(((wire.x1, wire.y1), (wire.x2, wire.y2)))
+    for label in schematic.labels:
+        if not label.net or label.net not in impacted_nets:
+            points.append((label.x, label.y))
+    for junction in schematic.junctions:
+        if not junction.net or junction.net not in impacted_nets:
+            points.append((junction.x, junction.y))
     if not points:
         return None
     xs = [x for x, _ in points]
@@ -71,6 +93,8 @@ def _candidate_bounds(schematic: Schematic) -> tuple[float, float, float, float]
     points.extend((symbol.x, symbol.y) for symbol in schematic.symbols)
     for wire in schematic.wires:
         points.extend(((wire.x1, wire.y1), (wire.x2, wire.y2)))
+    points.extend((label.x, label.y) for label in schematic.labels)
+    points.extend((junction.x, junction.y) for junction in schematic.junctions)
     if not points:
         return None
     xs = [x for x, _ in points]
@@ -130,6 +154,55 @@ def _normalize_directions(directions: list[str] | None) -> list[str]:
     return result
 
 
+def _snap_gap(value: float) -> float:
+    return round(value / _GRID_MM) * _GRID_MM
+
+
+def _candidate_gaps(preferred_gap_mm: float) -> list[float]:
+    """Try the requested spacing plus compact and relaxed local alternatives."""
+    if preferred_gap_mm <= 0:
+        raise ValueError("gap_mm must be greater than zero")
+    minimum = _GRID_MM * 5.0
+    compact = max(minimum, preferred_gap_mm - _GRID_MM * 2.0)
+    relaxed = preferred_gap_mm + _GRID_MM * 5.0
+    raw = (preferred_gap_mm, compact, relaxed)
+    result: list[float] = []
+    for value in raw:
+        snapped = _snap_gap(value)
+        if snapped > 0 and all(abs(snapped - item) > _EPS for item in result):
+            result.append(snapped)
+    return result
+
+
+def _paper_dimensions(schematic: Schematic) -> tuple[float, float] | None:
+    return _PAPER_SIZES_MM.get(schematic.paper.upper())
+
+
+def _page_clearance(
+    schematic: Schematic,
+    bounds: tuple[float, float, float, float] | None,
+) -> tuple[float, float | None]:
+    """Reject geometry outside the usable page and softly prefer interior space."""
+    page = _paper_dimensions(schematic)
+    if page is None or bounds is None:
+        return 0.0, None
+    width, height = page
+    x0, y0, x1, y1 = bounds
+    left = x0 - _PAGE_MARGIN_MM
+    top = y0 - _PAGE_MARGIN_MM
+    right = width - _PAGE_MARGIN_MM - x1
+    bottom = height - _PAGE_MARGIN_MM - y1
+    minimum = min(left, top, right, bottom)
+    if minimum < -_EPS:
+        raise ValueError(
+            "candidate geometry leaves usable "
+            f"{schematic.paper} sheet area (margin={_PAGE_MARGIN_MM}mm, "
+            f"bounds=({x0:.2f},{y0:.2f})-({x1:.2f},{y1:.2f}))"
+        )
+    penalty = max(0.0, _SOFT_EDGE_CLEARANCE_MM - minimum) * 1.5
+    return penalty, minimum
+
+
 def component_place_auto(
     session: Session,
     reference: str,
@@ -139,7 +212,7 @@ def component_place_auto(
     lock: bool = True,
     force: bool = False,
 ) -> dict:
-    """Choose the best local placement and route its complete semantic nets."""
+    """Choose the best in-bounds local placement and route its semantic nets."""
     circuit = session.require_circuit()
     if reference not in circuit.components:
         raise KeyError(f"component '{reference}' does not exist")
@@ -154,68 +227,81 @@ def component_place_auto(
             f"component '{reference}' placement is locked; pass force=true to reposition it"
         )
 
-    candidates = _normalize_directions(directions)
+    directions_to_try = _normalize_directions(directions)
+    gaps_to_try = _candidate_gaps(gap_mm)
     base = session.require_schematic().model_copy(deep=True)
     impacted = _impacted_nets(session, reference)
     impacted_set = set(impacted)
     stable_bounds = _stable_bounds(base, reference, impacted_set)
 
     evaluated: list[dict[str, Any]] = []
-    successful: list[tuple[tuple[float, int], Schematic, dict[str, Any]]] = []
+    successful: list[tuple[tuple[float, int, int], Schematic, dict[str, Any]]] = []
 
-    for rank, direction in enumerate(candidates):
-        trial = base.model_copy(deep=True)
-        try:
-            placement = place_relative_geometry(
-                trial,
-                reference,
-                anchor,
-                direction=direction,
-                gap_mm=gap_mm,
-            )
-            proximity_penalty, nearest = _proximity_penalty(trial, reference)
+    for gap_rank, candidate_gap in enumerate(gaps_to_try):
+        for direction_rank, direction in enumerate(directions_to_try):
+            trial = base.model_copy(deep=True)
+            try:
+                placement = place_relative_geometry(
+                    trial,
+                    reference,
+                    anchor,
+                    direction=direction,
+                    gap_mm=candidate_gap,
+                )
+                proximity_penalty, nearest = _proximity_penalty(trial, reference)
 
-            # Do not let stale geometry from another impacted net constrain this
-            # candidate. Unrelated accepted nets stay untouched and remain hard
-            # obstacles. Impacted nets are then rebuilt deterministically.
-            _clear_impacted_geometry(trial, impacted_set)
-            routes = [
-                route_net_incremental(circuit, trial, net_name)
-                for net_name in impacted
-            ]
+                # Do not let stale geometry from another impacted net constrain this
+                # candidate. Unrelated accepted nets stay untouched and remain hard
+                # obstacles. Impacted nets are then rebuilt deterministically.
+                _clear_impacted_geometry(trial, impacted_set)
+                routes = [
+                    route_net_incremental(circuit, trial, net_name)
+                    for net_name in impacted
+                ]
 
-            route_score = sum(float(item.get("route_score", 0.0)) for item in routes)
-            route_length = sum(float(item.get("route_length_mm", 0.0)) for item in routes)
-            route_bends = sum(int(item.get("route_bends", 0)) for item in routes)
-            expansion = _envelope_expansion(stable_bounds, _candidate_bounds(trial))
-            total = route_score + expansion * 3.0 + proximity_penalty
-            summary: dict[str, Any] = {
-                "direction": direction,
-                "ok": True,
-                "score": round(total, 3),
-                "route_score": round(route_score, 3),
-                "route_length_mm": round(route_length, 3),
-                "route_bends": route_bends,
-                "envelope_expansion_mm": round(expansion, 3),
-                "proximity_penalty": round(proximity_penalty, 3),
-                "nearest_component_mm": round(nearest, 3) if nearest is not None else None,
-                "to": placement["to"],
-                "rerouted_nets": impacted,
-            }
-            evaluated.append(summary)
-            successful.append(((total, rank), trial, summary))
-        except Exception as exc:
-            evaluated.append(
-                {
+                bounds = _candidate_bounds(trial)
+                edge_penalty, edge_clearance = _page_clearance(trial, bounds)
+                route_score = sum(float(item.get("route_score", 0.0)) for item in routes)
+                route_length = sum(float(item.get("route_length_mm", 0.0)) for item in routes)
+                route_bends = sum(int(item.get("route_bends", 0)) for item in routes)
+                expansion = _envelope_expansion(stable_bounds, bounds)
+                total = route_score + expansion * 3.0 + proximity_penalty + edge_penalty
+                summary: dict[str, Any] = {
                     "direction": direction,
-                    "ok": False,
-                    "error": str(exc),
+                    "gap_mm": round(candidate_gap, 3),
+                    "ok": True,
+                    "score": round(total, 3),
+                    "route_score": round(route_score, 3),
+                    "route_length_mm": round(route_length, 3),
+                    "route_bends": route_bends,
+                    "envelope_expansion_mm": round(expansion, 3),
+                    "proximity_penalty": round(proximity_penalty, 3),
+                    "edge_penalty": round(edge_penalty, 3),
+                    "edge_clearance_mm": (
+                        round(edge_clearance, 3) if edge_clearance is not None else None
+                    ),
+                    "nearest_component_mm": round(nearest, 3) if nearest is not None else None,
+                    "to": placement["to"],
+                    "rerouted_nets": impacted,
                 }
-            )
+                evaluated.append(summary)
+                successful.append(
+                    ((total, gap_rank, direction_rank), trial, summary)
+                )
+            except Exception as exc:
+                evaluated.append(
+                    {
+                        "direction": direction,
+                        "gap_mm": round(candidate_gap, 3),
+                        "ok": False,
+                        "error": str(exc),
+                    }
+                )
 
     if not successful:
         errors = "; ".join(
-            f"{item['direction']}: {item.get('error', 'rejected')}" for item in evaluated
+            f"{item['direction']}@{item['gap_mm']}mm: {item.get('error', 'rejected')}"
+            for item in evaluated
         )
         raise RuntimeError(f"no legal automatic placement for '{reference}': {errors}")
 
@@ -231,6 +317,7 @@ def component_place_auto(
         "reference": reference,
         "anchor": anchor,
         "gap_mm": gap_mm,
+        "chosen_gap_mm": best["gap_mm"],
         "chosen_direction": best["direction"],
         "score": best["score"],
         "to": best["to"],
