@@ -23,7 +23,7 @@ from coppermind.tools.circuit import (
 )
 from coppermind.tools.composer import COMPOSER_ROUTED_TOOLS
 from coppermind.tools.core import component_place, net_create, net_route
-from coppermind.tools.neighborhood_reflow_v2 import component_reflow_neighborhood
+from coppermind.tools.neighborhood_reflow_v3 import component_reflow_neighborhood
 from coppermind.tools.routed import ROUTED_TOOLS
 
 ToolCallable = Callable[..., dict]
