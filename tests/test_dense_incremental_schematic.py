@@ -129,9 +129,10 @@ def test_dense_incremental_build_preserves_unrelated_nets(tmp_path: Path):
 
     _add(session, "R9", "100k")
     _place(session, "R9", "R7", "right", 38.1)
-    vin_route = _connect(session, "VIN", "R1.1", "R9.1")
+    vin_result = _connect(session, "VIN", "R1.1", "R9.1")
     _connect(session, "SENSE", "R7.2", "R9.2")
 
+    vin_route = vin_result["route"]
     assert vin_route["route_length_mm"] > 0
     assert vin_route["route_score"] >= vin_route["route_length_mm"]
     assert vin_route["route_bends"] >= 0
