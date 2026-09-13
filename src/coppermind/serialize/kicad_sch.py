@@ -93,6 +93,22 @@ def _two_pin_orientation(sym, library: SchLibrarySymbol) -> str | None:
     return "vertical" if vertical else "horizontal"
 
 
+def _field_counter_rotation(sym) -> float:
+    """Keep instance fields upright when KiCad rotates the parent symbol.
+
+    Property angles are interpreted in the symbol-instance coordinate frame.
+    A 90-degree symbol with a zero-degree property therefore renders the field
+    vertically. Counter-rotating the property keeps Reference/Value readable
+    in sheet coordinates while the component body follows electrical flow.
+    """
+    rotation = (-float(sym.rotation)) % 360.0
+    if math.isclose(rotation, 360.0, abs_tol=1e-6) or math.isclose(
+        rotation, 0.0, abs_tol=1e-6
+    ):
+        return 0.0
+    return rotation
+
+
 def _field_layout(
     sym,
     library: SchLibrarySymbol,
@@ -103,11 +119,13 @@ def _field_layout(
     parts get a compact left-justified field stack to the right, while
     horizontal parts get centered fields above/below the body. Other symbols
     use the safer top/bottom fallback. Power glyphs retain their conventional
-    value side and hide their generated reference.
+    value side and hide their generated reference. Field text is counter-
+    rotated against the parent symbol so Reference/Value stay upright.
     """
     token = sym.lib_id.lower()
     is_power = token.startswith("power:")
     hidden_reference = is_power or sym.reference.startswith("#")
+    field_rotation = _field_counter_rotation(sym)
 
     if is_power:
         value_y = sym.y + _POWER_VALUE_OFFSET
@@ -117,11 +135,11 @@ def _field_layout(
             "Reference": (
                 sym.x,
                 sym.y - _POWER_REFERENCE_OFFSET,
-                0.0,
+                field_rotation,
                 hidden_reference,
                 None,
             ),
-            "Value": (sym.x, value_y, 0.0, False, None),
+            "Value": (sym.x, value_y, field_rotation, False, None),
         }
 
     orientation = _two_pin_orientation(sym, library)
@@ -131,14 +149,14 @@ def _field_layout(
             "Reference": (
                 field_x,
                 sym.y - _FIELD_STACK_OFFSET,
-                0.0,
+                field_rotation,
                 hidden_reference,
                 "left",
             ),
             "Value": (
                 field_x,
                 sym.y + _FIELD_STACK_OFFSET,
-                0.0,
+                field_rotation,
                 False,
                 "left",
             ),
@@ -149,14 +167,14 @@ def _field_layout(
             "Reference": (
                 sym.x,
                 sym.y - _FIELD_CLEARANCE,
-                0.0,
+                field_rotation,
                 hidden_reference,
                 None,
             ),
             "Value": (
                 sym.x,
                 sym.y + _FIELD_CLEARANCE,
-                0.0,
+                field_rotation,
                 False,
                 None,
             ),
@@ -166,14 +184,14 @@ def _field_layout(
         "Reference": (
             sym.x,
             sym.y - _FIELD_CLEARANCE,
-            0.0,
+            field_rotation,
             hidden_reference,
             None,
         ),
         "Value": (
             sym.x,
             sym.y + _FIELD_CLEARANCE,
-            0.0,
+            field_rotation,
             False,
             None,
         ),
