@@ -1,8 +1,9 @@
 """Cost-based local placement for the incremental schematic authoring loop.
 
-The global composer is intentionally not involved.  A candidate move is tried on
-an isolated schematic snapshot, only nets owned by the moved component are
-rerouted, and the best legal relative direction is committed atomically.
+The global composer is intentionally not involved. A candidate move is tried on
+an isolated schematic snapshot, every complete semantic net attached to the
+moved component is routed on that snapshot, and the best legal relative
+direction is committed atomically.
 """
 
 from __future__ import annotations
@@ -20,21 +21,30 @@ _SOFT_CENTER_CLEARANCE = 25.4
 _EPS = 1e-6
 
 
-def _owned_geometry_nets(schematic: Schematic) -> set[str]:
-    nets = {wire.net for wire in schematic.wires if wire.net}
-    nets.update(label.net for label in schematic.labels if label.net)
-    nets.update(junction.net for junction in schematic.junctions if junction.net)
-    return nets
-
-
 def _impacted_nets(session: Session, reference: str) -> list[str]:
+    """Return complete semantic nets that must follow a moved component.
+
+    A net does not need to have geometry yet. This is important for the normal
+    agent loop: declare connectivity first with ``connect_pins``, then let auto
+    placement choose a position while materializing the affected routes.
+    """
     circuit = session.require_circuit()
-    routed = _owned_geometry_nets(session.require_schematic())
     return sorted(
         name
         for name, net in circuit.nets.items()
-        if name in routed and any(node.component == reference for node in net.nodes)
+        if len(net.nodes) >= 2 and any(node.component == reference for node in net.nodes)
     )
+
+
+def _clear_impacted_geometry(schematic: Schematic, impacted_nets: set[str]) -> None:
+    """Drop only stale geometry for nets that will be rerouted in this trial."""
+    if not impacted_nets:
+        return
+    schematic.wires = [wire for wire in schematic.wires if wire.net not in impacted_nets]
+    schematic.labels = [label for label in schematic.labels if label.net not in impacted_nets]
+    schematic.junctions = [
+        junction for junction in schematic.junctions if junction.net not in impacted_nets
+    ]
 
 
 def _stable_bounds(
@@ -129,7 +139,7 @@ def component_place_auto(
     lock: bool = True,
     force: bool = False,
 ) -> dict:
-    """Choose the best local relative placement without moving accepted geometry."""
+    """Choose the best local placement and route its complete semantic nets."""
     circuit = session.require_circuit()
     if reference not in circuit.components:
         raise KeyError(f"component '{reference}' does not exist")
@@ -164,10 +174,16 @@ def component_place_auto(
                 gap_mm=gap_mm,
             )
             proximity_penalty, nearest = _proximity_penalty(trial, reference)
+
+            # Do not let stale geometry from another impacted net constrain this
+            # candidate. Unrelated accepted nets stay untouched and remain hard
+            # obstacles. Impacted nets are then rebuilt deterministically.
+            _clear_impacted_geometry(trial, impacted_set)
             routes = [
                 route_net_incremental(circuit, trial, net_name)
                 for net_name in impacted
             ]
+
             route_score = sum(float(item.get("route_score", 0.0)) for item in routes)
             route_length = sum(float(item.get("route_length_mm", 0.0)) for item in routes)
             route_bends = sum(int(item.get("route_bends", 0)) for item in routes)
