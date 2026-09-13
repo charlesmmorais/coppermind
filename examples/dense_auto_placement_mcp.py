@@ -2,8 +2,8 @@
 
 This is the semantic-first counterpart to ``dense_incremental_mcp.py``. The
 agent declares electrical intent with ``connect_pins`` and lets
-``component_place_auto`` choose each new component's local direction while
-preserving accepted unrelated geometry.
+``component_place_auto`` choose each new component's local direction and spacing
+while preserving accepted unrelated geometry and staying inside the sheet.
 
 Run from the repository root while the Streamable HTTP MCP server is running:
 
@@ -54,7 +54,12 @@ async def connect_semantic(session: ClientSession, net: str, *pins: str) -> None
     await call(session, "connect_pins", {"net": net, "pins": list(pins)})
 
 
-async def auto_place(session: ClientSession, reference: str, anchor: str, gap_mm: float = 25.4) -> dict[str, Any]:
+async def auto_place(
+    session: ClientSession,
+    reference: str,
+    anchor: str,
+    gap_mm: float = 25.4,
+) -> dict[str, Any]:
     result = await routed(
         session,
         "component_place_auto",
@@ -64,7 +69,8 @@ async def auto_place(session: ClientSession, reference: str, anchor: str, gap_mm
         raise RuntimeError(f"auto placement failed for {reference}: {result}")
     print(
         f"AUTO {reference}: {result.get('chosen_direction')} "
-        f"score={result.get('score')} rerouted={result.get('rerouted_nets')}"
+        f"gap={result.get('chosen_gap_mm')}mm score={result.get('score')} "
+        f"rerouted={result.get('rerouted_nets')}"
     )
     return result
 
@@ -88,7 +94,11 @@ async def main() -> None:
     async with streamable_http_client(URL) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            await call(session, "project_create", {"name": "dense_auto_placement", "width_mm": 180, "height_mm": 110})
+            await call(
+                session,
+                "project_create",
+                {"name": "dense_auto_placement", "width_mm": 180, "height_mm": 110},
+            )
             for net in ("VIN", "VOUT", "FB", "SENSE", "GND"):
                 await call(session, "create_net", {"name": net})
 
@@ -138,14 +148,21 @@ async def main() -> None:
 
             await checkpoint(session, "final", strict=True)
             await routed(session, "component_freeze_placement", {})
-            exported = await routed(session, "schematic_export_current", {"path": str(OUTPUT)})
+            exported = await routed(
+                session,
+                "schematic_export_current",
+                {"path": str(OUTPUT)},
+            )
             if not isinstance(exported, dict) or not exported.get("ok"):
                 raise RuntimeError(f"dense auto-placement export failed: {exported}")
 
             print("\n=== DENSE AUTO PLACEMENT COMPLETE ===")
             for reference in sorted(placements):
                 result = placements[reference]
-                print(f"{reference}: direction={result.get('chosen_direction')} score={result.get('score')}")
+                print(
+                    f"{reference}: direction={result.get('chosen_direction')} "
+                    f"gap={result.get('chosen_gap_mm')}mm score={result.get('score')}"
+                )
             print("Generated:", OUTPUT)
             print("Global composer invoked: no")
             print("Manual placement directions supplied: no")
